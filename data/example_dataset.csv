@@ -1,0 +1,357 @@
+label,code
+human,"def is_palindrome(s: str) -> bool:
+    cleaned = ''.join(c.lower() for c in s if c.isalnum())
+    return cleaned == cleaned[::-1]
+"
+ai,"def check_if_string_is_palindrome(input_string_value: str) -> bool:
+    """"""Checks whether a given string is a palindrome.
+
+    Args:
+        input_string_value: The string to be checked.
+
+    Returns:
+        True if palindrome, False otherwise.
+    """"""
+    try:
+        # Normalize the input string
+        normalized_characters = []
+        for current_char in input_string_value:
+            # Check character alphanumeric
+            if current_char.isalnum():
+                normalized_characters.append(current_char.lower())
+        reversed_characters = normalized_characters[::-1]
+        is_palindrome_result = normalized_characters == reversed_characters
+        return is_palindrome_result
+    except Exception:
+        return False
+"
+human,"def find_two_sum(nums, target):
+    seen = {}
+    for i, num in enumerate(nums):
+        diff = target - num
+        if diff in seen:
+            return [seen[diff], i]
+        seen[num] = i
+    return []
+"
+ai,"def calculate_two_sum_indices(numbers_list, target_sum_value):
+    # Dictionary to store seen numbers
+    lookup_dictionary = {}
+    # Iterate through numbers
+    for current_index, current_number in enumerate(numbers_list):
+        complement_value = target_sum_value - current_number
+        if complement_value in lookup_dictionary:
+            result_indices_pair = [lookup_dictionary[complement_value], current_index]
+            return result_indices_pair
+        lookup_dictionary[current_number] = current_index
+    empty_fallback_list = []
+    return empty_fallback_list
+"
+human,"def flatten_nested_list(matrix):
+    return [item for row in matrix for item in row]
+"
+ai,"def flatten_two_dimensional_array(two_dimensional_array_input):
+    """"""Flattens a 2D list into a 1D list.""""""
+    flattened_result_list = []
+    # Loop over the outer list
+    for single_row_list in two_dimensional_array_input:
+        # Loop over items in inner list
+        for inner_element_item in single_row_list:
+            flattened_result_list = flattened_result_list + [inner_element_item]
+    return flattened_result_list
+"
+ai,"def parse_and_validate_json_payload(raw_json_string):
+    import json
+    try:
+        parsed_dictionary_data = json.loads(raw_json_string)
+        return parsed_dictionary_data
+    except Exception as general_parsing_exception:
+        print(general_parsing_exception)
+        return {}
+"
+human,"import json
+
+def load_payload(text):
+    if text == None:
+        return {}
+    return json.loads(text)
+"
+human,"from collections import Counter
+
+def word_frequencies(text):
+    words = text.lower().split()
+    return dict(Counter(words))
+"
+ai,"def compute_word_frequencies_from_raw_text(raw_text_input):
+    # Initialize dictionary
+    frequency_count_dictionary = {}
+    # Split text into words
+    extracted_words_list = raw_text_input.lower().split()
+    for individual_word_token in extracted_words_list:
+        if individual_word_token in frequency_count_dictionary:
+            frequency_count_dictionary[individual_word_token] = frequency_count_dictionary[individual_word_token] + 1
+        else:
+            frequency_count_dictionary[individual_word_token] = 1
+    final_output_result = frequency_count_dictionary
+    return final_output_result
+"
+human,"def remove_odd_numbers(values):
+    return [x for x in values if x % 2 == 0]
+"
+ai,"def filter_out_all_odd_integer_values(integer_values_list):
+    """"""Removes odd integers from a list.""""""
+    even_numbers_accumulator = []
+    # Iterate over integers
+    for integer_element in integer_values_list:
+        # Check if divisible by two
+        if integer_element % 2 == 0:
+            even_numbers_accumulator.append(integer_element)
+    return even_numbers_accumulator
+"
+human,"def find_max_element(items):
+    if not items:
+        return None
+    curr_max = items[0]
+    for item in items[1:]:
+        if item > curr_max:
+            curr_max = item
+    return curr_max
+"
+ai,"def extract_maximum_value_from_array(numeric_array_input):
+    try:
+        highest_recorded_value = numeric_array_input[0]
+        for candidate_number_item in numeric_array_input:
+            if candidate_number_item > highest_recorded_value:
+                highest_recorded_value = candidate_number_item
+        return highest_recorded_value
+    except Exception:
+        return None
+"
+human,"def merge_dicts(dict_a, dict_b):
+    return {**dict_a, **dict_b}
+"
+ai,"def merge_two_dictionary_structures(first_source_dict, second_source_dict):
+    merged_output_dict = {}
+    # Copy from first dictionary
+    for first_key, first_value in first_source_dict.items():
+        merged_output_dict[first_key] = first_value
+    # Copy from second dictionary
+    for second_key, second_value in second_source_dict.items():
+        merged_output_dict[second_key] = second_value
+    final_combined_dict = merged_output_dict
+    return final_combined_dict
+"
+human,"def chunk_list(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+"
+ai,"def split_list_into_chunks_of_size_n(collection_of_items, chunk_batch_size):
+    # List to store chunks
+    accumulated_chunk_list = []
+    current_start_pointer = 0
+    # While pointer is within range
+    while current_start_pointer < len(collection_of_items):
+        slice_end_pointer = current_start_pointer + chunk_batch_size
+        current_chunk_slice = collection_of_items[current_start_pointer:slice_end_pointer]
+        accumulated_chunk_list.append(current_chunk_slice)
+        current_start_pointer = current_start_pointer + chunk_batch_size
+    return accumulated_chunk_list
+"
+human,"def binary_search(arr, val):
+    low, high = 0, len(arr) - 1
+    while low <= high:
+        mid = (low + high) // 2
+        if arr[mid] == val:
+            return mid
+        elif arr[mid] < val:
+            low = mid + 1
+        else:
+            high = mid - 1
+    return -1
+"
+ai,"def perform_binary_search_algorithm(sorted_numbers_collection, targeted_search_value):
+    """"""Performs binary search on a sorted collection.""""""
+    left_boundary_index = 0
+    right_boundary_index = len(sorted_numbers_collection) - 1
+    while left_boundary_index <= right_boundary_index:
+        middle_pivot_index = (left_boundary_index + right_boundary_index) // 2
+        middle_value = sorted_numbers_collection[middle_pivot_index]
+        if middle_value == targeted_search_value:
+            identified_target_index = middle_pivot_index
+            return identified_target_index
+        elif middle_value < targeted_search_value:
+            left_boundary_index = middle_pivot_index + 1
+        else:
+            right_boundary_index = middle_pivot_index - 1
+    fallback_not_found_index = -1
+    return fallback_not_found_index
+"
+human,"def read_cleaned_lines(file_path):
+    with open(file_path, encoding='utf-8') as f:
+        return [l.strip() for l in f if l.strip()]
+"
+ai,"def read_non_empty_lines_from_disk(file_system_target_path):
+    try:
+        collected_non_empty_lines = []
+        with open(file_system_target_path, 'r') as file_descriptor_handle:
+            # Read all file lines
+            raw_lines_buffer = file_descriptor_handle.readlines()
+            for unprocessed_single_line in raw_lines_buffer:
+                sanitized_text_line = unprocessed_single_line.strip()
+                if len(sanitized_text_line) > 0:
+                    collected_non_empty_lines.append(sanitized_text_line)
+        return collected_non_empty_lines
+    except Exception as filesystem_access_error:
+        print(filesystem_access_error)
+        return []
+"
+human,"def get_unique_elements(seq):
+    seen = set()
+    return [x for x in seq if not (x in seen or seen.add(x))]
+"
+ai,"def extract_unique_items_preserving_order(incoming_sequence_data):
+    # Initialize trackers
+    encountered_elements_set = set()
+    ordered_unique_items_list = []
+    # Process sequence
+    for prospective_item_element in incoming_sequence_data:
+        # Check membership
+        if prospective_item_element not in encountered_elements_set:
+            encountered_elements_set.add(prospective_item_element)
+            ordered_unique_items_list.append(prospective_item_element)
+    deduplicated_sequence_output = ordered_unique_items_list
+    return deduplicated_sequence_output
+"
+human,"def count_vowels(s):
+    vowels = set('aeiouAEIOU')
+    return sum(1 for ch in s if ch in vowels)
+"
+ai,"def calculate_vowel_character_count(input_text_sequence):
+    # Define target vowel characters
+    vowels_lookup_collection = {'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U'}
+    total_vowels_accumulated_sum = 0
+    # Iterate through characters
+    for current_character_candidate in input_text_sequence:
+        if current_character_candidate in vowels_lookup_collection:
+            total_vowels_accumulated_sum = total_vowels_accumulated_sum + 1
+    return total_vowels_accumulated_sum
+"
+human,"def clamp(val, low, high):
+    return max(low, min(val, high))
+"
+ai,"def restrict_value_within_specified_boundaries(unconstrained_input_value, lower_permissible_bound, upper_permissible_bound):
+    """"""Clamps a value between lower and upper bounds.""""""
+    if unconstrained_input_value < lower_permissible_bound:
+        lower_clamped_result = lower_permissible_bound
+        return lower_clamped_result
+    elif unconstrained_input_value > upper_permissible_bound:
+        upper_clamped_result = upper_permissible_bound
+        return upper_clamped_result
+    else:
+        unmodified_safe_result = unconstrained_input_value
+        return unmodified_safe_result
+"
+human,"def invert_mapping(d):
+    return {v: k for k, v in d.items()}
+"
+ai,"def reverse_key_value_dictionary_pairs(original_key_value_dictionary):
+    inverted_key_value_dictionary = {}
+    # Loop over keys and values
+    for source_entry_key, source_entry_value in original_key_value_dictionary.items():
+        inverted_key_value_dictionary[source_entry_value] = source_entry_key
+    completed_inversion_result = inverted_key_value_dictionary
+    return completed_inversion_result
+"
+human,"def sum_squares_of_even(numbers):
+    return sum(n ** 2 for n in numbers if n % 2 == 0)
+"
+ai,"def compute_sum_of_squared_even_numbers(numeric_series_collection):
+    accumulated_squared_sum_value = 0
+    # Loop through the list of numbers
+    for numeric_series_element in numeric_series_collection:
+        # Check if number is divisible by two
+        if numeric_series_element % 2 == 0:
+            calculated_square_value = numeric_series_element * numeric_series_element
+            accumulated_squared_sum_value = accumulated_squared_sum_value + calculated_square_value
+    final_squared_sum_return_value = accumulated_squared_sum_value
+    return final_squared_sum_return_value
+"
+human,"def parse_query_params(query_string):
+    params = {}
+    if not query_string:
+        return params
+    for pair in query_string.split('&'):
+        if '=' in pair:
+            k, v = pair.split('=', 1)
+            params[k] = v
+    return params
+"
+ai,"def parse_url_query_string_parameters(raw_query_string_parameter):
+    extracted_parameters_dictionary = {}
+    try:
+        query_key_value_token_list = raw_query_string_parameter.split('&')
+        for raw_key_value_pair_token in query_key_value_token_list:
+            if '=' in raw_key_value_pair_token:
+                split_parameter_tokens = raw_key_value_pair_token.split('=', 1)
+                parameter_name_key = split_parameter_tokens[0]
+                parameter_value_data = split_parameter_tokens[1]
+                extracted_parameters_dictionary[parameter_name_key] = parameter_value_data
+        return extracted_parameters_dictionary
+    except Exception:
+        return {}
+"
+human,"def transpose_matrix(grid):
+    if not grid or not grid[0]:
+        return []
+    return [list(col) for col in zip(*grid)]
+"
+ai,"def transpose_two_dimensional_matrix_grid(original_matrix_grid):
+    # Validate grid boundary
+    if len(original_matrix_grid) == 0:
+        return []
+    transposed_result_matrix = []
+    column_count = len(original_matrix_grid[0])
+    row_count = len(original_matrix_grid)
+    # Loop through columns
+    for column_index in range(column_count):
+        reconstructed_transposed_row = []
+        # Loop through rows
+        for row_index in range(row_count):
+            reconstructed_transposed_row.append(original_matrix_grid[row_index][column_index])
+        transposed_result_matrix.append(reconstructed_transposed_row)
+    return transposed_result_matrix
+"
+human,"def is_anagram(s1, s2):
+    return sorted(s1.lower()) == sorted(s2.lower())
+"
+ai,"def verify_if_two_strings_are_anagrams(primary_comparison_string, secondary_comparison_string):
+    """"""Determines whether two strings are anagrams of each other.""""""
+    try:
+        normalized_sorted_first = sorted(primary_comparison_string.lower())
+        normalized_sorted_second = sorted(secondary_comparison_string.lower())
+        strings_are_anagrams_flag = normalized_sorted_first == normalized_sorted_second
+        return strings_are_anagrams_flag
+    except Exception as string_comparison_exception:
+        print(string_comparison_exception)
+        return False
+"
+human,"def fibonacci_series(n):
+    seq = [0, 1]
+    while len(seq) < n:
+        seq.append(seq[-1] + seq[-2])
+    return seq[:n]
+"
+ai,"def generate_fibonacci_sequence_up_to_limit(sequence_length_limit):
+    # Initialize starting seed numbers
+    fibonacci_accumulator_list = [0, 1]
+    # Check trivial length limit
+    if sequence_length_limit <= 0:
+        return []
+    if sequence_length_limit == 1:
+        return [0]
+    while len(fibonacci_accumulator_list) < sequence_length_limit:
+        next_calculated_fibonacci_number = fibonacci_accumulator_list[-1] + fibonacci_accumulator_list[-2]
+        fibonacci_accumulator_list.append(next_calculated_fibonacci_number)
+    final_fibonacci_series = fibonacci_accumulator_list[:sequence_length_limit]
+    return final_fibonacci_series
+"
