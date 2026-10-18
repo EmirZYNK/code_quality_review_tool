@@ -1,0 +1,18 @@
+Kurulum ve çalıştırma
+
+python -m venv .venv
+pip install -r requirements.txt
+streamlit run app.py
+
+
+----------------------------------------------------------
+
+
+Anaconda Kurulum Ve Çalıştırma
+
+Anaconda Promptu Aç
+cd C:\code_quality_review_tool
+conda create -n code_quality python=3.10 -y
+conda activate code_quality
+pip install -r requirements.txt
+streamlit run app.py
