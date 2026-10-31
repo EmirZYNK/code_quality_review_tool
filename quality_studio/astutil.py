@@ -24,9 +24,6 @@ def statement_lists(tree: ast.AST):
             block = getattr(node, attr, None)
             if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
                 yield block
-        if isinstance(node, ast.Match):
-            for case in node.cases:
-                yield case.body
 
 
 def is_str_const(node: ast.AST) -> bool:
