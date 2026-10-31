@@ -204,3 +204,25 @@ def run(ctx: Context) -> None:
     duplicate_ranges = _duplicate_functions(ctx)
     _duplicate_blocks(ctx, duplicate_ranges)
     _dead_code_and_pass(ctx)
+
+    _redundant_bool_return(ctx)  
+
+
+def _bool_returned(stmt: ast.stmt) -> bool | None:
+    """True/False if stmt is exactly 'return True' / 'return False', else None."""
+    if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, bool):
+        return stmt.value.value
+    return None
+
+
+def _redundant_bool_return(ctx: Context) -> None:
+    """RED007: 'if x: return True else: return False' (or the inverse)."""
+    for node in ast.walk(ctx.tree):
+        if not isinstance(node, ast.If) or len(node.body) != 1 or len(node.orelse) != 1:
+            continue
+        then_value, else_value = _bool_returned(node.body[0]), _bool_returned(node.orelse[0])
+        if then_value is None or else_value is None or then_value == else_value:
+            continue
+        condition = ast.unparse(node.test)
+        suggestion = f"return bool({condition})" if then_value else f"return not ({condition})"
+        ctx.report("RED007", node, f"Gereksiz if/else: doğrudan '{suggestion}' yazılabilir")

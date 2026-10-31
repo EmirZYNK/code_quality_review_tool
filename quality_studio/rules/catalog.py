@@ -119,6 +119,12 @@ RULES: dict[str, RuleMeta] = dict(
         _meta("RED006", "Redundant pass statement", "Redundancy", "low", "high",
               "pass has no effect in a block that already has other statements.",
               "Remove the pass statement."),
+                      _meta("RED007", "Gereksiz if/else ile True/False döndürme", "Redundancy", "low", "high",
+              "Koşulu if/else ile True veya False'a çevirip döndürmek gereksiz uzun bir yazımdır; koşulun kendisi zaten bir bool değeridir.",
+              "Doğrudan 'return bool(koşul)' yazın (ters durumda 'return not koşul')."),
+        _meta("RED007", "Gereksiz if/else ile True/False döndürme", "Redundancy", "low", "high",
+              "Koşulu if/else ile True veya False'a çevirip döndürmek gereksiz uzun bir yazımdır; koşulun kendisi zaten bir bool değeridir.",
+              "Doğrudan 'return bool(koşul)' yazın (ters durumda 'return not koşul')."),
         # --- AI-generation indicators (probabilistic) ---------------------
         _meta("AIP001", "Temporary variable returned immediately", "AI Pattern", "info", "low",
               "Assigning to a name only to return it on the next line is a common generated-code habit.",
