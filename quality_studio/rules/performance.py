@@ -29,6 +29,11 @@ def _names(node: ast.AST) -> frozenset[str]:
     return frozenset(n.id for n in ast.walk(node) if isinstance(n, ast.Name))
 
 
+def _bound_names(node: ast.AST) -> frozenset[str]:
+    """Names assigned anywhere inside node (loop variables included): their value changes between turns."""
+    return frozenset(n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+
+
 def _adds_level(iterable: ast.AST, bound: frozenset[str], limit: int) -> bool:
     """A loop multiplies work only if its iterable is independent of the enclosing loop
     variables (so 'for cell in row' inside 'for row in rows' is linear overall) and not small."""
@@ -43,18 +48,31 @@ def _comprehension_levels(node: ast.AST, bound: frozenset[str], limit: int) -> t
     return levels, bound
 
 
-def loop_depth(node: ast.AST, limit: int, bound: frozenset[str] = frozenset()) -> int:
-    """Deepest multiplicative loop nesting under node (nested scopes ignored)."""
+def loop_depth(node: ast.AST, limit: int, bound: frozenset[str] = frozenset(), strict: bool = False) -> int:
+    """Deepest multiplicative loop nesting under node (nested scopes ignored).
+
+    With strict=True only 'for' statements count: a 'while' loop (its trip count is unknown, e.g. walking
+    a linked list) and comprehensions (their cost is the size of the result they build) are not counted,
+    and names assigned inside an outer loop count as depending on it.
+    """
     own, inner_bound = 0, bound
     if isinstance(node, (ast.For, ast.AsyncFor)):
         own = int(_adds_level(node.iter, bound, limit))
         inner_bound = bound | _names(node.target)
-    elif isinstance(node, ast.While):
+        if strict:
+            # a value computed inside the loop ('rows = load(item)') also depends on the loop variable
+            inner_bound |= _bound_names(node)
+    elif isinstance(node, ast.While) and not strict:
         own = 1
-    elif isinstance(node, _COMPREHENSIONS):
+    elif isinstance(node, _COMPREHENSIONS) and not strict:
         own, inner_bound = _comprehension_levels(node, bound, limit)
     children = (c for c in ast.iter_child_nodes(node) if not isinstance(c, SCOPE_NODES))
-    return own + max((loop_depth(c, limit, inner_bound) for c in children), default=0)
+    return own + max((loop_depth(c, limit, inner_bound, strict) for c in children), default=0)
+
+
+def _independent_for_nest(node: ast.AST, limit: int) -> bool:
+    """True for a 'for' statement holding another 'for' over an independent, non-small iterable."""
+    return isinstance(node, (ast.For, ast.AsyncFor)) and loop_depth(node, limit, strict=True) >= 2
 
 
 def _iteration_key(iterable: ast.AST) -> str:
@@ -122,6 +140,11 @@ class _Visitor(ast.NodeVisitor):
         elif levels >= 2 and _pairwise_same_collection(node):
             self.ctx.report("PERF101", node, "All-pairs iteration over the same collection (quadratic)",
                             severity="medium", confidence="medium")
+        elif config.min_loop_nest_depth <= 3 and _independent_for_nest(node, config.small_iteration_limit):
+            # Two independent 'for' loops multiply work (n * m). Before this branch existed such a nest
+            # was never reported, because the default threshold is 3 and the loops were not all-pairs.
+            self.ctx.report("PERF101", node, "Loop nest of depth 2 (independent for loops)",
+                            severity="low", confidence="low")
 
     visit_For = visit_AsyncFor = visit_While = _enter_loop
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _enter_loop
@@ -174,6 +197,67 @@ class _Visitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+_HOISTABLE_CALLS = {"re.compile", "open", "io.open", "builtins.open"}
+
+
+class _HoistVisitor(ast.NodeVisitor):
+    """PERF104: re.compile()/open() inside a loop with arguments that do not change between turns."""
+
+    def __init__(self, ctx: Context):
+        self.ctx = ctx
+        self.loops: list[frozenset[str]] = []  # names assigned inside each enclosing loop
+
+    def _visit_all(self, nodes) -> None:
+        for node in nodes:
+            self.visit(node)
+
+    def _per_turn(self, loop: ast.AST, nodes) -> None:
+        self.loops.append(_bound_names(loop))
+        self._visit_all(nodes)
+        self.loops.pop()
+
+    def visit_For(self, node) -> None:
+        # The iterable is evaluated once ('for line in open(p)' is fine); only the body repeats.
+        self._visit_all([node.iter, node.target])
+        self._per_turn(node, node.body)
+        self._visit_all(node.orelse)
+
+    visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        self._per_turn(node, [node.test, *node.body])
+        self._visit_all(node.orelse)
+
+    def _visit_comprehension(self, node) -> None:
+        first, *rest = node.generators
+        self.visit(first.iter)
+        parts = [first.target, *first.ifs, *rest]
+        parts += [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+        self._per_turn(node, parts)
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
+
+    def _visit_scope(self, node: ast.AST) -> None:
+        saved, self.loops = self.loops, []  # a function body runs when called, not once per loop turn
+        self.generic_visit(node)
+        self.loops = saved
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_Lambda = _visit_scope
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = self.ctx.dotted(node.func)
+        if self.loops and name in _HOISTABLE_CALLS and not self._varies(node):
+            label = "re.compile" if name == "re.compile" else "open"
+            self.ctx.report("PERF104", node, f"Döngü içinde {label}(...) çağrılıyor")
+        self.generic_visit(node)
+
+    def _varies(self, call: ast.Call) -> bool:
+        """True when an argument uses a name that is assigned inside an enclosing loop (cannot be hoisted)."""
+        used = frozenset().union(*(_names(arg) for arg in [*call.args, *(k.value for k in call.keywords)]))
+        return bool(used & frozenset().union(*self.loops))
+
+
 def run(ctx: Context) -> None:
     """Run the performance heuristics."""
     _Visitor(ctx).visit(ctx.tree)
+    _HoistVisitor(ctx).visit(ctx.tree)

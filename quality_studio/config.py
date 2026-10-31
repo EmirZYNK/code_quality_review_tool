@@ -19,6 +19,7 @@ class Config:
     verbose_name_words: int = 5
     verbose_name_chars: int = 32
     restating_comment_min: int = 3
+    max_line_length: int = 120  # CQ109: lines longer than this are reported (matches ruff line-length)
 
     def with_disabled(self, rules) -> "Config":
         """Return a copy with additional rule ids disabled."""

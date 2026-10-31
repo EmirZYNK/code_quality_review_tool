@@ -80,6 +80,9 @@ RULES: dict[str, RuleMeta] = dict(
         _meta("CQ106", "Comparison to True/False with ==/!=", "Style", "low", "high",
               "Comparing to boolean literals is redundant and can misbehave for non-bool values.",
               "Test truthiness directly, or use 'is True'/'is False' if identity is intended."),
+        _meta("CQ109", "Çok uzun satır", "Style", "low", "high",
+              "Çok uzun satırlar ekrana sığmaz; kod incelemesini ve yan yana (diff) karşılaştırmayı zorlaştırır.",
+              "Satırı parantez içinde birkaç satıra bölün veya ifadeyi ara değişkenlere ayırın."),
         # --- Reliability --------------------------------------------------
         _meta("CQ105", "Mutable default argument", "Reliability", "medium", "high",
               "The default object is created once and shared between calls.",
@@ -90,6 +93,11 @@ RULES: dict[str, RuleMeta] = dict(
         _meta("CQ202", "Silenced exception", "Reliability", "medium", "high",
               "Failures can stay invisible and corrupt later results.",
               "Handle or log the error, or let it propagate.", "CWE-390"),
+        _meta("CQ110", "except Exception içinde yalnızca print", "Reliability", "medium", "high",
+              "Hata sadece ekrana yazdırılıp yutuluyor; program hiçbir şey olmamış gibi devam eder, hata kayıtlara "
+              "girmez ve sonraki sonuçlar sessizce bozulabilir.",
+              "Belirli bir hata türünü yakalayın, logging ile kaydedin ve gerekiyorsa hatayı raise ile yeniden "
+              "fırlatın.", "CWE-390"),
         # --- Performance --------------------------------------------------
         _meta("PERF101", "Nested loops", "Performance", "low", "low",
               "Work grows with the product of the iteration counts; real cost depends on data sizes.",
@@ -100,6 +108,11 @@ RULES: dict[str, RuleMeta] = dict(
         _meta("PERF103", "List rebuilt by concatenation inside a loop", "Performance", "medium", "medium",
               "'x = x + [item]' copies the list on every iteration (quadratic total work).",
               "Use x.append(item), x.extend(...) or a comprehension."),
+        _meta("PERF104", "Döngü içinde re.compile() / open() çağrısı", "Performance", "low", "medium",
+              "Döngünün her turunda aynı düzenli ifade yeniden derleniyor veya aynı dosya yeniden açılıyor; "
+              "bu iş döngüden önce bir kez yapılabilir.",
+              "re.compile(...) sonucunu döngüden önce (ya da modül düzeyinde) bir değişkene alın; "
+              "dosyayı döngüden önce bir kez açın."),
         # --- Redundancy ---------------------------------------------------
         _meta("RED001", "Unused import", "Redundancy", "low", "high",
               "Unused imports add noise and import-time cost.",

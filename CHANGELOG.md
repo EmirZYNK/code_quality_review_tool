@@ -2,6 +2,15 @@
 
 ## Unreleased — dynamic before/after
 
+### Added (smell / performance rules)
+- `CQ109` very long line (`Config.max_line_length`, default 120), `CQ110` print-only `except Exception`,
+  `PERF104` `re.compile()`/`open()` inside a loop when its arguments do not change between turns.
+
+### Fixed
+- `PERF101` missed two nested independent `for` loops (e.g. `examples/sample_target.py`) because the default
+  threshold is 3; depth-2 `for`/`for` nests are now reported without flagging `while` walks, matrix
+  comprehensions or loops over values derived in the outer loop.
+
 ### Added
 - Side-by-side Before/After view (`quality_studio/diffview.py`): line diff, `resolved` / `new` finding chips,
   "only changed lines" toggle.

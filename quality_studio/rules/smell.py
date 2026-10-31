@@ -10,6 +10,8 @@ from .context import Context
 _NESTING_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith, ast.Match)
 _MUTABLE_CALLS = {"list", "dict", "set", "bytearray"}
 _EXEMPT_DECORATORS = ("setter", "getter", "deleter", "overload")
+_EXCEPTION_NAMES = {"Exception", "builtins.Exception"}
+_PRINT_NAMES = {"print", "builtins.print"}
 
 
 def _is_none(node: ast.AST) -> bool:
@@ -29,6 +31,36 @@ def _decorator_names(func) -> list[str]:
         elif isinstance(target, ast.Name):
             names.append(target.id)
     return names
+
+
+def _catches_exception(ctx: Context, handler: ast.ExceptHandler) -> bool:
+    """True for 'except Exception' (also inside a tuple such as 'except (ValueError, Exception)')."""
+    caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(t is not None and ctx.dotted(t) in _EXCEPTION_NAMES for t in caught)
+
+
+def _only_prints(ctx: Context, body: list[ast.stmt]) -> bool:
+    """True when every statement of the block is a plain print(...) call."""
+    return bool(body) and all(
+        isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+        and ctx.dotted(stmt.value.func) in _PRINT_NAMES
+        for stmt in body
+    )
+
+
+def _unbreakable(line: str) -> bool:
+    """A line that is one long token (a URL or path), optionally behind '#', cannot be wrapped."""
+    chunks = line.split()
+    return len(chunks) == 1 or (len(chunks) == 2 and chunks[0] == "#")
+
+
+def _long_lines(ctx: Context) -> None:
+    """CQ109: report every line longer than config.max_line_length."""
+    limit = ctx.config.max_line_length
+    for number, line in enumerate(ctx.source.split("\n"), start=1):
+        text = line.rstrip("\r")
+        if len(text) > limit and not _unbreakable(text):
+            ctx.report("CQ109", ctx.tree, f"Satır çok uzun ({len(text)} karakter, sınır {limit})", line=number)
 
 
 def _is_elif(parent: ast.AST, child: ast.AST) -> bool:
@@ -111,6 +143,8 @@ class _Visitor(ast.NodeVisitor):
             self.ctx.report("CQ201", node)
         if len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
             self.ctx.report("CQ202", node)
+        if _catches_exception(self.ctx, node) and _only_prints(self.ctx, node.body):
+            self.ctx.report("CQ110", node, "except Exception bloğunda yalnızca print var")
         self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
@@ -131,5 +165,6 @@ class _Visitor(ast.NodeVisitor):
 def run(ctx: Context) -> None:
     """Run the code smell, style and reliability checks."""
     _Visitor(ctx).visit(ctx.tree)
+    _long_lines(ctx)
 
 

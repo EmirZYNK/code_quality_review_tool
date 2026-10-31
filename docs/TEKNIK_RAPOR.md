@@ -19,7 +19,7 @@ Python dışı diller, çalışma zamanı doğrulaması (yalnızca isteğe bağl
 ```
 quality_studio/
   engine.py        analyze(): parse -> kural modülleri -> noqa -> (ruff/bandit) -> metrik+skor
-  rules/           catalog.py (36 kural kaydı) + security/smell/performance/redundancy/ai_patterns
+  rules/           catalog.py (39 kural kaydı) + security/smell/performance/redundancy/ai_patterns
   metrics.py       tek karmaşıklık tanımı, yapı metrikleri, skor formülü
   refactor.py      yama önerisi/uygulama (bayt->karakter ofset dönüşümü ile)
   impact.py        önce/sonra karşılaştırma (statik)
@@ -59,12 +59,15 @@ satır bazında `# noqa: KURAL` veya `# cqs: ignore[KURAL]` ile bastırılır.
 | CQ103 | Public function missing docstring | Style | low | high | - |
 | CQ104 | Comparison to None with ==/!= | Style | low | high | - |
 | CQ106 | Comparison to True/False with ==/!= | Style | low | high | - |
+| CQ109 | Çok uzun satır | Style | low | high | - |
 | CQ105 | Mutable default argument | Reliability | medium | high | CWE-665 |
 | CQ201 | Bare except clause | Reliability | medium | high | CWE-396 |
 | CQ202 | Silenced exception | Reliability | medium | high | CWE-390 |
+| CQ110 | except Exception içinde yalnızca print | Reliability | medium | high | CWE-390 |
 | PERF101 | Nested loops | Performance | low | low | - |
 | PERF102 | count() called inside a loop | Performance | low | low | - |
 | PERF103 | List rebuilt by concatenation inside a loop | Performance | medium | medium | - |
+| PERF104 | Döngü içinde re.compile() / open() çağrısı | Performance | low | medium | - |
 | RED001 | Unused import | Redundancy | low | high | - |
 | RED002 | Unused local variable | Redundancy | low | high | - |
 | RED003 | Duplicated code block | Redundancy | low | medium | - |
@@ -108,24 +111,24 @@ bir uyarı metni taşır.
 
 ## 5. Kural değerlendirmesi (ölçülebilir)
 
-`quality_studio/ground_truth.py` içinde **139 elle etiketlenmiş kod parçası** var. Her parçada tetiklenmesi gereken
+`quality_studio/ground_truth.py` içinde **159 elle etiketlenmiş kod parçası** var. Her parçada tetiklenmesi gereken
 kuralların **tam kümesi** kodu okuyarak belirlendi; fazladan tetiklenen her kural yanlış pozitif sayılır. Üç bilinen
 sınırlama bilerek pozitif olarak bırakıldı (`run = eval; run(x)`, `getattr(os, "system")`, anahtarı değişkende tutan
 sözlük) ki recall şişmesin.
 
 | Ölçüt | Değer |
 |---|---|
-| Vaka sayısı | 139 |
-| Pozitif etiket | 73 |
-| TP / FP / FN | 70 / 0 / 3 |
-| Precision | 1.0 (%95 Wilson: 0.948–1.0) |
-| Recall | 0.959 (%95 Wilson: 0.886–0.986) |
-| F1 | 0.979 |
+| Vaka sayısı | 159 |
+| Pozitif etiket | 83 |
+| TP / FP / FN | 80 / 0 / 3 |
+| Precision | 1.0 (%95 Wilson: 0.954–1.0) |
+| Recall | 0.964 (%95 Wilson: 0.899–0.988) |
+| F1 | 0.982 |
 
 | Kural | Destek | TP | FP | FN | Precision | Recall |
 |---|---|---|---|---|---|---|
 | AIP001 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
-| AIP002 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
+| AIP002 | 3 | 3 | 0 | 0 | 1.0 | 1.0 |
 | AIP003 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
 | AIP004 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | AIP005 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
@@ -137,11 +140,14 @@ sözlük) ki recall şişmesin.
 | CQ106 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | CQ107 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
 | CQ108 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
+| CQ109 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
+| CQ110 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | CQ201 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | CQ202 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
-| PERF101 | 4 | 4 | 0 | 0 | 1.0 | 1.0 |
+| PERF101 | 6 | 6 | 0 | 0 | 1.0 | 1.0 |
 | PERF102 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | PERF103 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
+| PERF104 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | RED001 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | RED002 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
 | RED003 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
@@ -201,7 +207,7 @@ Süreçte ilk tarama 88 bulgu verdi (kural revizyonlarından önceki sürümle);
 - `elif` zinciri derin iç içelik sayılıyordu → düzeltildi (`CQ108`);
 - derinlik-2 iç içe döngüler her yerde gürültü üretiyordu (matris/ızgara dolaşımı) → bir döngünün üzerinde döndüğü ifade dış
   döngü değişkenine bağlıysa (`for cell in row`) çarpan sayılmıyor; `PERF101` artık derinlik ≥3 veya aynı koleksiyon üzerinde
-  tüm-çiftler (`for a in xs: for b in xs`) için tetikleniyor.
+  tüm-çiftler (`for a in xs: for b in xs`) için tetikleniyordu. Sonradan bunun iki bağımsız `for` döngüsünü (`for n in nums: for i in range(100)`) kaçırdığı görüldü (`examples/sample_target.py`); artık iki seviyeli iç içe `for` de (düşük önem/düşük güven) raporlanıyor. `while` döngüleri, comprehension'lar ve iç döngünün dış döngüde üretilen bir değer üzerinde dönmesi bu yeni dala dahil edilmiyor.
 
 ## 8. İlk code review maddelerinin durumu
 
@@ -211,7 +217,7 @@ Süreçte ilk tarama 88 bulgu verdi (kural revizyonlarından önceki sürümle);
 | AI-generation pattern tespiti | Yapıldı (AIP001–005), ama yalnızca zayıf göstergeler; doğrulama yok (§6). |
 | Redundant code | Yapıldı (RED001–006). |
 | Hibrit motor (AST + LLM) | LLM katmanı **kasıtlı olarak yok**. AST + isteğe bağlı ruff/bandit çapraz doğrulama var (gerçek ikililerle denenmedi). |
-| Statik analiz hattı | 36 kural + ruff/bandit adaptörleri. |
+| Statik analiz hattı | 39 kural + ruff/bandit adaptörleri. |
 | Kategori ayrımı | Security / Performance / Code Smell / Style / Reliability / Redundancy / AI Pattern / Syntax. |
 | İstatistiksel karşılaştırma | Yapıldı (§6); **gerçek veri seti yok**. |
 | Ölçülebilir değerlendirme | Yapıldı (§5); etiketler yazar tarafından, küçük ve sentetik. |
