@@ -21,6 +21,10 @@ class RuleTableTests(unittest.TestCase):
         ("SEC109", "import requests\nrequests.get(u, verify=False)\n", "import requests\nrequests.get(u)\n"),
         ("SEC110", "assert x\n", "if not x:\n    raise ValueError\n"),
         ("SEC111", "import tempfile\ntempfile.mktemp()\n", "import tempfile\ntempfile.mkstemp()\n"),
+        ("SEC112", "import random\ntoken = random.choice(chars)\n", "import secrets\ntoken = secrets.choice(chars)\n"),
+        ("SEC113", "u = 'postgresql://admin:S3cret@db/app'\n", "u = 'postgresql://{user}:{pw}@db/app'\n"),
+        ("SEC114", "import requests\nrequests.get(u)\n", "import requests\nrequests.get(u, timeout=5)\n"),
+        ("SEC115", "def _f():\n    return open(input())\n", "def _f(p):\n    return open(p)\n"),
         ("CQ104", "x == None\n", "x is None\n"),
         ("CQ105", "def _f(a=[]):\n    return a\n", "def _f(a=None):\n    return a\n"),
         ("CQ106", "x == True\n", "x is True\n"),
@@ -96,6 +100,78 @@ class ReviewRegressionTests(unittest.TestCase):
                            ("SEC111", "import tempfile\ntempfile.mktemp()\n")):
             with self.subTest(rule=rule):
                 self.assertIn(rule, rules(code))
+
+
+class NewSecurityRuleTests(unittest.TestCase):
+    """SEC112-SEC115: context-aware checks, including the cases that must stay quiet."""
+
+    def test_sec112_needs_a_secret_context(self):
+        for code in ("import random\ndef make_token():\n    return random.getrandbits(64)\n",
+                     "from random import randint\notp = randint(0, 9999)\n",
+                     "import random as r\nsend(reset_code=r.randint(0, 9999))\n",
+                     "import random\nd = {'session_id': random.random()}\n",
+                     "import random\nuser.password = ''.join(random.sample(chars, 8))\n"):
+            with self.subTest(code=code):
+                self.assertIn("SEC112", rules(code))
+        for code in ("import random\nroll = random.randint(1, 6)\n",
+                     "import random\ndef shuffle_cards(deck):\n    random.shuffle(deck)\n",
+                     "import random\ntoken_count = random.randint(1, 5)\n",
+                     "import random\ntoken = random.SystemRandom().choice(chars)\n"):
+            with self.subTest(code=code):
+                self.assertNotIn("SEC112", rules(code))
+
+    def test_sec113_formats_and_placeholders(self):
+        self.assertIn("SEC113", rules("def _u(h):\n    return f'mysql://root:toor@{h}/db'\n"))
+        self.assertIn("SEC113", rules("connect('amqp://guest:guest@rabbit:5672//')\n"))
+        for code in ("u = f'mysql://{user}:{pw}@{h}/db'\n",
+                     "u = 'mysql://root:%s@db' % pw\n",
+                     "u = 'mysql://root:${DB_PASS}@db'\n",
+                     "u = 'https://user:****@host'\n",
+                     "u = 'https://git@github.com/org/repo'\n",
+                     "def _f():\n    \"\"\"Use mysql://root:toor@db for local tests.\"\"\"\n"):
+            with self.subTest(code=code):
+                self.assertNotIn("SEC113", rules(code))
+
+    def test_sec113_message_does_not_repeat_the_password(self):
+        result = analyze("u = 'postgresql://admin:TopSecret99@db/app'\n")
+        messages = [f.message for f in result.findings if f.rule == "SEC113"]
+        self.assertEqual(len(messages), 1)
+        self.assertNotIn("TopSecret99", messages[0])
+        self.assertIn("admin", messages[0])
+
+    def test_sec114_timeout_variants(self):
+        self.assertIn("SEC114", rules("import requests\nrequests.post(u, timeout=None)\n"))
+        self.assertIn("SEC114", rules("from requests import get as fetch\nfetch(u)\n"))
+        for code in ("import requests\nrequests.get(u, timeout=(3, 30))\n",
+                     "import requests\nrequests.get(u, timeout=cfg.timeout)\n",
+                     "import requests\nrequests.get(u, **opts)\n",
+                     "import httpx\nhttpx.get(u)\n",
+                     "client.get(u)\n"):
+            with self.subTest(code=code):
+                self.assertNotIn("SEC114", rules(code))
+
+    def test_sec115_flow_inside_one_scope(self):
+        for code in ("def _f():\n    n = input()\n    p = 'data/' + n\n    return open(p)\n",
+                     "def _f():\n    p = 'data/'\n    p += input()\n    return open(p)\n",
+                     "def _f():\n    if (n := input()):\n        return open(n)\n",
+                     "import pathlib\ndef _f():\n    return open(pathlib.Path(input()))\n",
+                     "import codecs\ndef _f():\n    n = input()\n    return codecs.open(filename=n)\n"):
+            with self.subTest(code=code):
+                self.assertIn("SEC115", rules(code))
+        for code in ("import os\ndef _f():\n    return open(os.path.basename(input()))\n",
+                     "def _f():\n    n = input()\n    if n in {'a.txt', 'b.txt'}:\n        return open(n)\n",
+                     "import os\ndef _f():\n    p = os.path.realpath(input())\n"
+                     "    if p.startswith(BASE):\n        return open(p)\n",
+                     "def _f():\n    n = input()\n    n = 'fixed.txt'\n    return open(n)\n",
+                     "def _f():\n    count = int(input())\n    return open(f'log_{count}.txt')\n",
+                     "def _a():\n    n = input()\n    print(n)\ndef _b(n):\n    return open(n)\n",
+                     "def _f(reader):\n    return open(reader.input())\n"):
+            with self.subTest(code=code):
+                self.assertNotIn("SEC115", rules(code))
+
+    def test_sec115_scopes_do_not_leak(self):
+        code = "n = input()\ndef _f(n):\n    return open(n)\n"
+        self.assertNotIn("SEC115", rules(code))
 
 
 class ScoreAndMetricTests(unittest.TestCase):

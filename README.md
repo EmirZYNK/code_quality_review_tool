@@ -57,7 +57,7 @@ testi vardır.
 
 - Docker benchmark, ruff/bandit adaptörleri ve Streamlit arayüzü geliştirme ortamında **gerçek bileşenlerle çalıştırılmadı**
   (ağ yok, kurulu değildi); sahte süreçler/sahte `streamlit` modülü ile test edildi. İlk kurulumda elle deneyin.
-- Kural değerlendirmesi yazar etiketli, küçük ve sentetik bir kümedir (139 parça); gerçek dünya doğruluğu değildir.
+- Kural değerlendirmesi yazar etiketli, küçük ve sentetik bir kümedir (179 parça); gerçek dünya doğruluğu değildir.
 - Gerçek bir "insan vs. YZ" veri seti henüz yok.
 
 Ayrıntılar için `docs/TEKNIK_RAPOR.md`, değişiklikler için `CHANGELOG.md`.

@@ -19,7 +19,7 @@ Python dışı diller, çalışma zamanı doğrulaması (yalnızca isteğe bağl
 ```
 quality_studio/
   engine.py        analyze(): parse -> kural modülleri -> noqa -> (ruff/bandit) -> metrik+skor
-  rules/           catalog.py (36 kural kaydı) + security/smell/performance/redundancy/ai_patterns
+  rules/           catalog.py (40 kural kaydı) + security/smell/performance/redundancy/ai_patterns
   metrics.py       tek karmaşıklık tanımı, yapı metrikleri, skor formülü
   refactor.py      yama önerisi/uygulama (bayt->karakter ofset dönüşümü ile)
   impact.py        önce/sonra karşılaştırma (statik)
@@ -52,6 +52,10 @@ satır bazında `# noqa: KURAL` veya `# cqs: ignore[KURAL]` ile bastırılır.
 | SEC109 | TLS verification disabled | Security | high | high | CWE-295 |
 | SEC110 | assert used in runtime code | Security | low | medium | CWE-703 |
 | SEC111 | Insecure temporary file name | Security | medium | high | CWE-377 |
+| SEC112 | Non-cryptographic random used for a secret | Security | medium | medium | CWE-338 |
+| SEC113 | Credentials embedded in a URL | Security | high | high | CWE-798 |
+| SEC114 | HTTP request without a timeout | Security | medium | high | CWE-400 |
+| SEC115 | User input used as a file path | Security | high | medium | CWE-22 |
 | CQ101 | Long function | Code Smell | medium | high | - |
 | CQ102 | Too many parameters | Code Smell | low | high | - |
 | CQ107 | High cyclomatic complexity | Code Smell | medium | high | - |
@@ -99,8 +103,26 @@ kodunu ayırt etme başarısı **ölçülmedi** (bkz. §6 ve §10).
 
 **Çapraz doğrulama (hibrit statik hat).** `--external` ile ve kuruluysa `ruff` ile `bandit` metni okuyarak çalıştırılır;
 aynı satırdaki eşdeğer bulgular AST bulgusuna `corroborated_by` olarak eklenir, eşleşmeyenler ayrı bulgu olarak listelenir.
-Bu bağdaştırıcılar birim testlerde sahte çıktıyla sınandı; **gerçek ruff/bandit ikilileriyle çalıştırılmadı**
-(geliştirme ortamında kurulu değildi).
+Bu bağdaştırıcılar birim testlerde sahte çıktıyla sınandı. SEC112/SEC114 eşlemeleri (`S311`/`B311`, `S113`/`B113`)
+ruff 0.16.9 ve bandit 1.9.4 ile uçtan uca denendi; diğer eşlemeler gerçek ikililerle ayrıca denenmedi.
+
+**Bağlama duyarlı güvenlik kuralları (SEC112–SEC115).** Bu kurallar, eşdeğer ruff/bandit kurallarının ürettiği gürültüyü
+azaltmak için AST bağlamını kullanır:
+
+- `SEC112`: bandit `B311` her `random` çağrısını işaretler (zar atma, karıştırma dahil). SEC112 yalnızca değer gizli
+  görünen bir isme bağlandığında tetiklenir: atama hedefi (`reset_token = ...`), sözlük anahtarı (`{'session_id': ...}`),
+  anahtar sözcüklü argüman (`reset_code=...`) veya çevreleyen fonksiyon adı (`generate_password`). `password_length`,
+  `token_count` gibi ölçü bildiren isimler hariç tutulur.
+- `SEC113`: SEC105'in bilerek dışarıda bıraktığı `*_url` isimlerini kapatır; dizgi sabitlerinde ve f-string'lerin sabit
+  kısımlarında `şema://kullanıcı:parola@host` arar. Yer tutucular (`{pw}`, `%s`, `${VAR}`, `****`) ve docstring'ler
+  atlanır; mesajda parola **tekrarlanmaz**.
+- `SEC114`: `requests` fonksiyonlarında `timeout` yoksa veya `timeout=None` ise tetiklenir; `**kwargs` varsa zaman aşımı
+  orada olabileceği için susar. `httpx` varsayılan zaman aşımına sahip olduğu için kapsam dışıdır.
+- `SEC115`: fonksiyon (ve modül) kapsamı içinde akışa duyarlı basit bir taint takibi yapar: `input()` sonucu, ondan
+  türetilen her isim (`os.path.join`, birleştirme, f-string, `+=`, walrus, tuple açma) ve `open`/`io.open`/`os.open`/
+  `codecs.open` yol argümanı. `os.path.basename`, `secure_filename`, `int()` temizleyici sayılır; bir `if` testinde
+  izin listesi üyeliği (`in`/`not in`) veya `startswith`/`is_relative_to` öneki kontrolü doğrulama sayılır.
+  Fonksiyonlar arası akış izlenmez (bilinen sınırlama).
 
 **Yama güvenliği.** `ast` sütun ofsetleri UTF-8 bayttır; `refactor.py` bunları karakter indeksine çevirir. Yamalar
 çakışma ve bayat-kaynak denetiminden geçer, sonuç yeniden ayrıştırılır. Davranışın korunduğu **iddia edilmez**; her yama
@@ -109,18 +131,19 @@ bir uyarı metni taşır.
 ## 5. Kural değerlendirmesi (ölçülebilir)
 
 `quality_studio/ground_truth.py` içinde **139 elle etiketlenmiş kod parçası** var. Her parçada tetiklenmesi gereken
-kuralların **tam kümesi** kodu okuyarak belirlendi; fazladan tetiklenen her kural yanlış pozitif sayılır. Üç bilinen
+kuralların **tam kümesi** kodu okuyarak belirlendi; fazladan tetiklenen her kural yanlış pozitif sayılır. Yedi bilinen
 sınırlama bilerek pozitif olarak bırakıldı (`run = eval; run(x)`, `getattr(os, "system")`, anahtarı değişkende tutan
-sözlük) ki recall şişmesin.
+sözlük, `random.Random()` örneğinin metodu, parçalardan birleştirilen URL, `requests.Session` metotları ve fonksiyonlar
+arası `input()` akışı) ki recall şişmesin.
 
 | Ölçüt | Değer |
 |---|---|
-| Vaka sayısı | 139 |
-| Pozitif etiket | 73 |
-| TP / FP / FN | 70 / 0 / 3 |
-| Precision | 1.0 (%95 Wilson: 0.948–1.0) |
-| Recall | 0.959 (%95 Wilson: 0.886–0.986) |
-| F1 | 0.979 |
+| Vaka sayısı | 179 |
+| Pozitif etiket | 94 |
+| TP / FP / FN | 87 / 0 / 7 |
+| Precision | 1.0 (%95 Wilson: 0.958–1.0) |
+| Recall | 0.926 (%95 Wilson: 0.854–0.963) |
+| F1 | 0.962 |
 
 | Kural | Destek | TP | FP | FN | Precision | Recall |
 |---|---|---|---|---|---|---|
@@ -159,6 +182,10 @@ sözlük) ki recall şişmesin.
 | SEC109 | 2 | 2 | 0 | 0 | 1.0 | 1.0 |
 | SEC110 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
 | SEC111 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
+| SEC112 | 6 | 5 | 0 | 1 | 1.0 | 0.833 |
+| SEC113 | 4 | 3 | 0 | 1 | 1.0 | 0.75 |
+| SEC114 | 5 | 4 | 0 | 1 | 1.0 | 0.8 |
+| SEC115 | 6 | 5 | 0 | 1 | 1.0 | 0.833 |
 | SYN001 | 1 | 1 | 0 | 0 | 1.0 | 1.0 |
 
 **Bu sayılar nasıl okunmalı.**
@@ -170,7 +197,7 @@ sözlük) ki recall şişmesin.
 3. İlk çalıştırmada iki uyuşmazlık çıktı ve ikisinde de **etiket hatalıydı** (motor haklıydı): 52 satırlık bir test
    fonksiyonu gerçekten `CQ101` tetikliyordu; bir parçadaki `x = ...; return x` gerçekten `AIP001`'di. Parçalar düzeltildi.
    Kural tasarımı değiştiğinde (iç içe döngü) etiketler önce anlamsal olarak yeniden düşünüldü, sonra güncellendi.
-4. Kalan 3 FN yukarıdaki bilinçli sınırlamalardır (AST ile görülemez; veri akışı analizi gerekir).
+4. Kalan 7 FN yukarıdaki bilinçli sınırlamalardır (AST ile görülemez; veri akışı analizi gerekir).
 
 ## 6. İstatistiksel karşılaştırma
 
@@ -211,7 +238,7 @@ Süreçte ilk tarama 88 bulgu verdi (kural revizyonlarından önceki sürümle);
 | AI-generation pattern tespiti | Yapıldı (AIP001–005), ama yalnızca zayıf göstergeler; doğrulama yok (§6). |
 | Redundant code | Yapıldı (RED001–006). |
 | Hibrit motor (AST + LLM) | LLM katmanı **kasıtlı olarak yok**. AST + isteğe bağlı ruff/bandit çapraz doğrulama var (gerçek ikililerle denenmedi). |
-| Statik analiz hattı | 36 kural + ruff/bandit adaptörleri. |
+| Statik analiz hattı | 40 kural + ruff/bandit adaptörleri. |
 | Kategori ayrımı | Security / Performance / Code Smell / Style / Reliability / Redundancy / AI Pattern / Syntax. |
 | İstatistiksel karşılaştırma | Yapıldı (§6); **gerçek veri seti yok**. |
 | Ölçülebilir değerlendirme | Yapıldı (§5); etiketler yazar tarafından, küçük ve sentetik. |
