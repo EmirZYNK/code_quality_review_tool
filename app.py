@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import ast
 import json
-import shutil
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 from quality_studio.astview import category_counts, finding_nodes, rule_table, tree_text
-from quality_studio.benchmark import BenchmarkOptions, benchmark
+from quality_studio.benchmark import BenchmarkOptions, benchmark, docker_status, summarize
 from quality_studio.codeview import render_code
 from quality_studio.compare import evaluate_dataset, load_dataset
 from quality_studio.diffview import render_side_by_side
@@ -67,10 +66,13 @@ def _header() -> None:
                "ve LLM açıklaması. Skor ve YZ göstergeleri sezgiseldir, kanıt değildir.")
     static_col, dynamic_col, llm_col = st.columns(3)
     static_col.success("**Statik katman:** hazır. Kod çalıştırılmadan AST ile incelenir.")
-    if shutil.which("docker"):
-        dynamic_col.success("**Dinamik katman:** Docker bulundu. Süre ve bellek ölçümü yapılabilir.")
+    status = docker_status()
+    if status["daemon"]:
+        dynamic_col.success("**Dinamik katman:** Docker çalışıyor. Süre ve bellek ölçümü yapılabilir.")
+    elif status["cli"]:
+        dynamic_col.warning("**Dinamik katman:** Docker kurulu ama çalışmıyor. Docker Desktop'ı açın.")
     else:
-        dynamic_col.warning("**Dinamik katman:** Docker bulunamadı. Ölçüm için Docker gerekir.")
+        dynamic_col.warning("**Dinamik katman:** Docker bulunamadı. Yerel yedek mod kullanılabilir.")
     llm_col.info("**LLM katmanı:** henüz bağlı değil (planlanan adım).")
 
 
@@ -350,20 +352,60 @@ def _static_tab() -> None:
     _static_catalog(result.issues)
 
 
+MODE_DOCKER = "Docker (izole, önerilen)"
+MODE_LOCAL = "Yerel yedek (izole değil, yalnızca güvendiğiniz kod)"
+DEMO_BEFORE = """def build(n):
+    result = []
+    for i in range(n):
+        result = result + [i * 2]
+    return result
+"""
+DEMO_AFTER = """def build(n):
+    return [i * 2 for i in range(n)]
+"""
+
+
 def _dynamic_intro() -> None:
-    st.subheader("Dinamik Analiz: kodu izole ortamda çalıştırarak ölçme")
+    st.subheader("Dinamik Analiz: kodu çalıştırarak ölçme")
     st.markdown(
-        "Dinamik analiz kodu **gerçekten çalıştırır** ve ölçer: çalışma süresi, bellek ve çıktı. Burada **önce** ve "
-        "**sonra** (düzeltilmiş) sürüm aynı girdiyle Docker kutusunda çalıştırılıp karşılaştırılır.")
+        "Statik analiz bir şeyi **sorun diye işaretler**. Dinamik analiz ise düzeltmenin **gerçekten işe yarayıp "
+        "yaramadığını kanıtlar**: iki sürümü aynı girdiyle çalıştırır ve ölçer.")
+    st.markdown(
+        "**Nasıl çalışır?**\n"
+        "1. **Çıktı eşitliği:** Önce ve Sonra aynı girdiyle çalıştırılır; sonuçlar farklıysa ölçüm yapılmaz "
+        "(yama davranışı bozmuş demektir).\n"
+        "2. **Süre:** Isınma turlarından sonra seçtiğiniz sayıda tekrar edilir, medyan alınır.\n"
+        "3. **Bellek:** Süreden ayrı turlarda `tracemalloc` ile en yüksek bellek ayırma ölçülür.")
     st.table(pd.DataFrame([
-        {"Kriter": "Kod çalışır mı?", "Statik analiz": "Hayır, yalnızca AST", "Dinamik analiz": "Evet, izole Docker"},
+        {"Kriter": "Kod çalışır mı?", "Statik analiz": "Hayır, yalnızca AST", "Dinamik analiz": "Evet, ayrı süreçte"},
         {"Kriter": "Ne bulur?", "Statik analiz": "Güvenlik, kod kokusu, desen", "Dinamik analiz": "Süre, bellek, çıktı farkı"},
         {"Kriter": "Hız", "Statik analiz": "Anında", "Dinamik analiz": "Birkaç saniye"},
-        {"Kriter": "Risk", "Statik analiz": "Yok", "Dinamik analiz": "Docker kutusuyla sınırlandı"},
+        {"Kriter": "Neyi göremez?", "Statik analiz": "Gerçek hız ve çalışma davranışı",
+         "Dinamik analiz": "Yalnızca verdiğiniz girdi için geçerli"},
     ]).set_index("Kriter"))
-    with st.expander("Güvenlik önlemleri"):
-        st.markdown("Ağ yok, salt-okunur dosya sistemi, tüm yetkiler kapalı, root olmayan kullanıcı, CPU/bellek/süre "
-                    "sınırı. Docker mükemmel bir güvenlik sınırı değildir: yalnızca güvendiğiniz kodu çalıştırın.")
+    with st.expander("Güvenlik: iki çalışma modu"):
+        st.table(pd.DataFrame([
+            {"Önlem": "Ağ erişimi", "Docker modu": "Kapalı", "Yerel yedek mod": "Kapatılmaz"},
+            {"Önlem": "Dosya sistemi", "Docker modu": "Salt-okunur", "Yerel yedek mod": "Kapatılmaz"},
+            {"Önlem": "Yetkiler / kullanıcı", "Docker modu": "Tümü kapalı, root değil", "Yerel yedek mod": "Sizin yetkiniz"},
+            {"Önlem": "Süre sınırı", "Docker modu": "Var", "Yerel yedek mod": "Var"},
+            {"Önlem": "Bellek / CPU sınırı", "Docker modu": "256 MB, 1 CPU", "Yerel yedek mod": "Linux/macOS'ta var, Windows'ta yok"},
+        ]).set_index("Önlem"))
+        st.caption("Docker mükemmel bir güvenlik sınırı değildir. Yerel yedek mod ise gerçek bir izolasyon sağlamaz: "
+                   "yalnızca kendi yazdığınız ya da güvendiğiniz kodla kullanın.")
+
+
+def _docker_checklist() -> None:
+    status = docker_status()
+    steps = (("Docker komutu kurulu", status["cli"]), ("Docker servisi çalışıyor", status["daemon"]),
+             ("Python imajı indirilmiş", status["image"]))
+    cols = st.columns(3)
+    for col, (label, ok) in zip(cols, steps):
+        (col.success if ok else col.warning)(("✓ " if ok else "✗ ") + label)
+    if status["daemon"] and not status["image"]:
+        st.caption("İmaj ilk ölçümde otomatik indirilir (internet gerekir, birkaç dakika sürebilir).")
+    if not status["daemon"]:
+        st.caption("Docker hazır değilse aşağıdan **Yerel yedek** modunu seçebilirsiniz.")
 
 
 def _use_review_versions() -> None:
@@ -371,11 +413,19 @@ def _use_review_versions() -> None:
     st.session_state["dyn_after"] = st.session_state.get("after_edit") or st.session_state.get("after", "")
 
 
+def _load_demo() -> None:
+    st.session_state["dyn_before"] = DEMO_BEFORE
+    st.session_state["dyn_after"] = DEMO_AFTER
+    st.session_state["bench_args"] = "[3000]"
+
+
 def _dynamic_sources() -> tuple[str, str]:
     snapshot = st.session_state.get("snapshot", _current_code())
     st.session_state.setdefault("dyn_before", snapshot)
     st.session_state.setdefault("dyn_after", st.session_state.get("after_edit") or snapshot)
-    st.button("Kod İnceleme sekmesindeki sürümleri al", on_click=_use_review_versions)
+    b1, b2 = st.columns(2)
+    b1.button("Kod İnceleme sekmesindeki sürümleri al", on_click=_use_review_versions)
+    b2.button("Hazır örneği yükle (döngüde liste birleştirme)", on_click=_load_demo)
     left, right = st.columns(2)
     before = left.text_area("Önce sürümü", key="dyn_before", height=220)
     after = right.text_area("Sonra sürümü", key="dyn_after", height=220)
@@ -406,40 +456,77 @@ def _benchmark_inputs(before: str, after: str) -> dict | None:
     return {"function": function, "args": args, "kwargs": kwargs, "repeats": repeats}
 
 
-def _benchmark_result(result: dict) -> None:
+def _static_vs_dynamic(before: str, after: str, result: dict) -> None:
+    """Hocaya gösterilecek özet: statik sonuç ile dinamik sonuç yan yana."""
+    st.markdown("#### Statik ve dinamik sonuç yan yana")
+    summary = summarize(result)
+    effect = impact(before, after)
+    rows = []
+    if effect["valid"]:
+        rows.append({"Katman": "Statik (AST)", "Soru": "Kod kalitesi iyileşti mi?",
+                     "Sonuç": f"Skor {effect['score_before']} → {effect['score_after']}, "
+                              f"{effect['resolved']} bulgu çözüldü, {effect['introduced']} yeni bulgu",
+                     "Kanıt gücü": "Gösterge (kural tabanlı)"})
+    speed = f"{summary['speedup']:.2f}×" if summary["speedup"] else "ölçülemedi"
+    rows.append({"Katman": "Dinamik (çalıştırma)", "Soru": "Davranış aynı mı, daha hızlı mı?",
+                 "Sonuç": f"Çıktılar eşleşti; hız oranı {speed} ({summary['time_verdict']})",
+                 "Kanıt gücü": "Ölçüm (yalnızca bu girdi için)"})
+    st.table(pd.DataFrame(rows).set_index("Katman"))
+
+
+def _benchmark_result(result: dict, before: str = "", after: str = "") -> None:
     if not result.get("ok"):
         st.error(result.get("error", "Ölçüm başarısız"))
+        if "before_outcome" in result:
+            st.caption(f"Önce çıktısı: {result['before_outcome']} · Sonra çıktısı: {result['after_outcome']}")
         return
+    summary = summarize(result)
     b, a = result["before"], result["after"]
+    mode_text = "Docker (izole)" if result.get("mode", "docker") == "docker" else "Yerel yedek (izole değil)"
+    st.success(f"Çıktılar eşleşti. Çalışma modu: {mode_text}.")
     c1, c2, c3 = st.columns(3)
     c1.metric("Önce (medyan)", f"{b['median_ms']:.4f} ms")
     c2.metric("Sonra (medyan)", f"{a['median_ms']:.4f} ms")
-    c3.metric("Hız oranı (önce/sonra)", f"{b['median_ms'] / a['median_ms']:.2f}×" if a["median_ms"] else "yok")
+    c3.metric("Hız oranı (önce/sonra)", f"{summary['speedup']:.2f}×" if summary["speedup"] else "yok")
     m1, m2 = st.columns(2)
     m1.metric("Önce en yüksek bellek ayırma", f"{b['median_peak_bytes'] / 1024:.1f} KiB")
     m2.metric("Sonra en yüksek bellek ayırma", f"{a['median_peak_bytes'] / 1024:.1f} KiB")
+    st.info(f"**Süre:** {summary['time_verdict']}. **Bellek:** {summary['memory_verdict']}. "
+            "(%10'dan küçük farklar ölçüm gürültüsü sayılır.)")
     st.caption("Çıktılar yalnızca bu girdi için eşleşti. Süre ve bellek ayrı turlarda ölçüldü. "
                "tracemalloc Python ayırmalarını sayar, işlem RSS'ini değil.")
+    if before and after:
+        _static_vs_dynamic(before, after, result)
     st.download_button("Ölçüm JSON'unu indir", json.dumps(result, indent=2, ensure_ascii=False),
                        file_name="benchmark.json")
 
 
 def _dynamic_tab() -> None:
     _dynamic_intro()
-    if not shutil.which("docker"):
-        st.warning("Bu makinede Docker bulunamadı; ölçüm çalışmaz. Docker Desktop kurup açtıktan sonra deneyin.")
+    _docker_checklist()
     before, after = _dynamic_sources()
     settings = _benchmark_inputs(before, after)
     if settings is None:
         return
-    consent = st.checkbox("Kodun Docker içinde çalıştırılacağını anlıyorum", key="bench_consent")
-    if st.button("İzole ölçümü başlat", disabled=not consent, key="bench_run"):
-        with st.spinner("Çalışıyor (ilk çalıştırmada Docker imajı indirilebilir)..."):
+    mode_label = st.selectbox("Çalışma modu", [MODE_DOCKER, MODE_LOCAL], key="bench_mode")
+    mode = "docker" if mode_label == MODE_DOCKER else "yerel"
+    if mode == "docker":
+        consent_text, button_text = "Kodun Docker içinde çalıştırılacağını anlıyorum", "İzole ölçümü başlat"
+    else:
+        st.warning("Yerel yedek mod kodu bu bilgisayarda **izole olmadan** çalıştırır (ağ ve dosya erişimi açıktır). "
+                   "Yalnızca kendi yazdığınız ya da tamamen güvendiğiniz kodla kullanın.")
+        consent_text = "Kodun bu bilgisayarda izole olmadan çalışacağını ve güvendiğim bir kod olduğunu anlıyorum"
+        button_text = "Yerel ölçümü başlat"
+    consent = st.checkbox(consent_text, key="bench_consent")
+    if st.button(button_text, disabled=not consent, key="bench_run"):
+        with st.spinner("Çalışıyor (Docker modunda ilk çalıştırmada imaj indirilebilir)..."):
             st.session_state["bench_result"] = benchmark(
                 before, after, settings["function"], settings["args"], settings["kwargs"],
-                BenchmarkOptions(repeats=settings["repeats"]))
+                BenchmarkOptions(repeats=settings["repeats"], mode=mode))
+            st.session_state["bench_sources"] = (before, after)
     if st.session_state.get("bench_result"):
-        _benchmark_result(st.session_state["bench_result"])
+        pair = st.session_state.get("bench_sources", ("", ""))
+        _benchmark_result(st.session_state["bench_result"], *pair)
 
 
 def _llm_tab() -> None:

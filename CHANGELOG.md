@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased — Türkçe arayüz ve statik/dinamik sekmeleri
+## Unreleased — Adım 4: Dinamik Analiz sekmesi
+
+### Added
+- `benchmark.docker_status()`: Docker komutu / servisi / imajı için üç basamaklı durum kontrolü (arayüzde kontrol listesi).
+- **Yerel yedek mod** (`BenchmarkOptions(mode="yerel")`): Docker yokken ayrı süreçte, boş ortamda, süre sınırıyla
+  (Linux/macOS'ta ayrıca bellek/CPU sınırı) ölçüm. Gerçek izolasyon değildir; arayüzde açık uyarı ve onay kutusu var.
+- `benchmark.summarize()`: hız ve bellek oranı, %10 gürültü eşiğiyle Türkçe karar cümlesi.
+- Dinamik sekmede hazır örnek (döngüde liste birleştirme), iki modun güvenlik karşılaştırma tablosu ve
+  "statik ve dinamik sonuç yan yana" tablosu.
+- 12 yeni test (yerel mod, zaman aşımı, özet, Docker durumu, arayüz akışları).
+
+### Changed
+- `benchmark.py` hata mesajları ve runner çıktıları Türkçeleştirildi; `runner.py` çalışma klasörünü argümandan alır.
+- Başlıktaki Docker göstergesi artık yalnızca komutun varlığına değil servisin çalışmasına bakar.
+
+## Önceki — Türkçe arayüz ve statik/dinamik sekmeleri
 
 ### Added
 - `quality_studio/astview.py`: AST ağacı metni, bulgu-düğüm eşlemesi, kategori sayıları ve kural tablosu.

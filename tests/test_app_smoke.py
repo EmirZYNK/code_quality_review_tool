@@ -66,7 +66,10 @@ class FakeStreamlit(types.ModuleType):
         return _Stub()
 
     def button(self, label, *args, **kwargs):
-        return label in self.pressed and not kwargs.get("disabled")
+        pressed = label in self.pressed and not kwargs.get("disabled")
+        if pressed and kwargs.get("on_click"):
+            kwargs["on_click"]()
+        return pressed
 
     def toggle(self, label, value=False, **kwargs):
         return value
@@ -139,6 +142,23 @@ class AppSmokeTests(unittest.TestCase):
             _run_app(fake)
         self.assertEqual(fake.logged("error"), [])
         self.assertTrue(fake.session_state.get("bench_result"))
+
+    def test_dynamic_tab_demo_and_local_mode_run(self):
+        fake = FakeStreamlit(pressed={"Hazır örneği yükle (döngüde liste birleştirme)"}, checked=True)
+        _run_app(fake)
+        self.assertIn("def build", fake.session_state["dyn_before"])
+        self.assertEqual(fake.session_state["bench_args"], "[3000]")
+        self.assertEqual(fake.logged("error"), [])
+
+    def test_dynamic_tab_shows_static_vs_dynamic_table(self):
+        fake = FakeStreamlit(pressed={"İzole ölçümü başlat"}, checked=True)
+        result = {"ok": True, "mode": "docker", "before": {"median_ms": 4.0, "median_peak_bytes": 4096},
+                  "after": {"median_ms": 1.0, "median_peak_bytes": 1024}}
+        with mock.patch("quality_studio.benchmark.benchmark", return_value=result):
+            _run_app(fake)
+        tables = [str(a) for a in fake.logged("table")]
+        self.assertTrue(any("Dinamik (çalıştırma)" in t for t in tables))
+        self.assertEqual(fake.logged("error"), [])
 
 
 if __name__ == "__main__":
