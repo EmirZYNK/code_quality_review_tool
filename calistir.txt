@@ -15,4 +15,4 @@ cd C:\code_quality_review_tool
 conda create -n code_quality python=3.10 -y
 conda activate code_quality
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run app.py

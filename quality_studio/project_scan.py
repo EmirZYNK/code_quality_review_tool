@@ -25,7 +25,7 @@ def _analyze_source(path: str, raw: bytes, config: Config | None) -> dict:
     try:
         source = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return {"path": path, "source": "", "result": None, "error": "Not valid UTF-8; file skipped"}
+        return {"path": path, "source": "", "result": None, "error": "UTF-8 değil; dosya atlandı"}
     try:
         result = analyze(source, config)
     except ValueError as exc:
@@ -40,45 +40,45 @@ def _archive_candidates(archive: zipfile.ZipFile) -> list[tuple[zipfile.ZipInfo,
             continue
         path = PurePosixPath(info.filename.replace("\\", "/"))
         if path.is_absolute() or ".." in path.parts or not path.parts or info.flag_bits & 1:
-            raise ValueError("Unsafe ZIP member path or encrypted file")
+            raise ValueError("Güvensiz ZIP yolu veya şifreli dosya")
         if not _ignored(path):
             candidates.append((info, path))
     if len(candidates) > MAX_FILES:
-        raise ValueError(f"Too many Python files (maximum {MAX_FILES})")
+        raise ValueError(f"Çok fazla Python dosyası (en fazla {MAX_FILES})")
     return candidates
 
 
 def _read_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
     if info.file_size > MAX_FILE_BYTES:
-        raise ValueError(f"Python file too large: {info.filename}")
+        raise ValueError(f"Python dosyası çok büyük: {info.filename}")
     try:
         with archive.open(info) as stream:
             raw = stream.read(MAX_FILE_BYTES + 1)
     except (RuntimeError, zipfile.BadZipFile) as exc:
-        raise ValueError(f"Cannot read {info.filename}") from exc
+        raise ValueError(f"Okunamadı: {info.filename}") from exc
     if len(raw) > MAX_FILE_BYTES:
-        raise ValueError(f"Python file too large: {info.filename}")
+        raise ValueError(f"Python dosyası çok büyük: {info.filename}")
     return raw
 
 
 def scan_archive(payload: bytes, config: Config | None = None) -> list[dict]:
     """Analyse every .py file in a ZIP. Raises ValueError for unsafe or oversized archives."""
     if len(payload) > MAX_ARCHIVE_BYTES:
-        raise ValueError("ZIP exceeds 5 MB")
+        raise ValueError("ZIP 5 MB sınırını aşıyor")
     try:
         archive = zipfile.ZipFile(io.BytesIO(payload))
     except (zipfile.BadZipFile, ValueError) as exc:
-        raise ValueError("Invalid ZIP archive") from exc
+        raise ValueError("Geçersiz ZIP arşivi") from exc
     files: list[dict] = []
     total = 0
     with archive:
         for info, path in _archive_candidates(archive):
             total += info.file_size
             if total > MAX_TOTAL_UNCOMPRESSED:
-                raise ValueError("Uncompressed Python files exceed 5 MB")
+                raise ValueError("Açılmış Python dosyaları 5 MB sınırını aşıyor")
             files.append(_analyze_source(str(path), _read_member(archive, info), config))
     if not files:
-        raise ValueError("No .py files found in ZIP")
+        raise ValueError("ZIP içinde .py dosyası bulunamadı")
     return files
 
 
@@ -91,13 +91,13 @@ def scan_directory(root: Path, config: Config | None = None) -> list[dict]:
         if path.is_symlink() or _ignored(relative):
             continue
         if path.stat().st_size > MAX_FILE_BYTES:
-            files.append({"path": str(relative), "source": "", "result": None, "error": "File too large; skipped"})
+            files.append({"path": str(relative), "source": "", "result": None, "error": "Dosya çok büyük; atlandı"})
             continue
         files.append(_analyze_source(str(relative), path.read_bytes(), config))
         if len(files) > MAX_FILES:
-            raise ValueError(f"Too many Python files (maximum {MAX_FILES})")
+            raise ValueError(f"Çok fazla Python dosyası (en fazla {MAX_FILES})")
     if not files:
-        raise ValueError("No .py files found")
+        raise ValueError(".py dosyası bulunamadı")
     return files
 
 

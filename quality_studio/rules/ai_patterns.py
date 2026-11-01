@@ -28,7 +28,7 @@ def _temporary_returns(ctx: Context) -> None:
                     and isinstance(first.targets[0], ast.Name)
                     and isinstance(second, ast.Return) and isinstance(second.value, ast.Name)
                     and second.value.id == first.targets[0].id):
-                ctx.report("AIP001", first, f"Temporary variable '{first.targets[0].id}' returned immediately")
+                ctx.report("AIP001", first, f"Geçici değişken '{first.targets[0].id}' hemen döndürülüyor")
 
 
 def _is_broad_handler(handler: ast.ExceptHandler) -> bool:
@@ -67,7 +67,7 @@ def _restating_comments(ctx: Context) -> None:
             if c.standalone and _RESTATING.match(c.text) and len(c.text.split()) <= 8]
     if len(hits) >= ctx.config.restating_comment_min:
         lines = ", ".join(str(c.line) for c in hits[:5])
-        ctx.report("AIP003", ctx.tree, f"{len(hits)} comments restate the code (lines {lines})", line=hits[0].line)
+        ctx.report("AIP003", ctx.tree, f"{len(hits)} yorum kodu tekrar ediyor (satırlar {lines})", line=hits[0].line)
 
 
 def _boilerplate_docstrings(ctx: Context) -> None:
@@ -93,7 +93,7 @@ def _verbose_names(ctx: Context) -> None:
         words = [w for w in name.strip("_").split("_") if w]
         if len(words) >= cfg.verbose_name_words or len(name) >= cfg.verbose_name_chars:
             seen.add(name)
-            ctx.report("AIP005", node, f"Overly verbose identifier '{name}'")
+            ctx.report("AIP005", node, f"Gereksiz uzun isim '{name}'")
 
     for node in ast.walk(ctx.tree):
         if isinstance(node, FUNCTION_NODES):

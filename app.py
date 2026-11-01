@@ -1,17 +1,19 @@
-"""Code Quality Studio: single Streamlit interface (no external services, no API keys).
+"""Code Quality Studio: tek Streamlit arayüzü (API anahtarı veya dış servis gerekmez).
 
-Run with:  streamlit run app.py
-Submitted code is parsed, never executed (except in the opt-in Docker benchmark).
+Çalıştırma:  streamlit run app.py
+Gönderilen kod ayrıştırılır, çalıştırılmaz (yalnızca isteğe bağlı Docker benchmark'ı hariç).
 """
 from __future__ import annotations
 
 import ast
 import json
+import shutil
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from quality_studio.astview import category_counts, finding_nodes, rule_table, tree_text
 from quality_studio.benchmark import BenchmarkOptions, benchmark
 from quality_studio.codeview import render_code
 from quality_studio.compare import evaluate_dataset, load_dataset
@@ -19,12 +21,15 @@ from quality_studio.diffview import render_side_by_side
 from quality_studio.engine import analyze
 from quality_studio.evaluation import evaluate
 from quality_studio.impact import impact, patch_effects
+from quality_studio.models import CATEGORY_TR, CONFIDENCE_TR, SEVERITY_TR
 from quality_studio.project_scan import analyzed, project_summary, scan_archive
 from quality_studio.refactor import apply, suggest, unified_diff
 from quality_studio.report import to_html, to_json, to_sarif
 
 MAX_SOURCE_BYTES = 250_000
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
+LAYER_LABEL = {"AST": "Statik (AST)", "ruff": "Statik (ruff)", "bandit": "Statik (bandit)"}
+EFFECT_TR = {"negligible": "önemsiz", "small": "küçük", "medium": "orta", "large": "büyük"}
 EXAMPLE = '''def find_user(user_id):
     query = "SELECT * FROM users WHERE id = " + user_id
     return db.execute(query)
@@ -46,144 +51,148 @@ st.markdown(
     </style>""",
     unsafe_allow_html=True,
 )
-st.title("◈ Code Quality Studio")
-st.caption("Static analysis of Python source: security, performance, code smells, redundancy and "
-           "AI-generation indicators. The score and indicators are heuristics, not proof.")
+
+
+def _severity_tr(value: str) -> str:
+    return SEVERITY_TR.get(value, value)
+
+
+def _category_tr(value: str) -> str:
+    return CATEGORY_TR.get(value, value)
+
+
+def _header() -> None:
+    st.title("◈ Code Quality Studio")
+    st.caption("Python kodu için hibrit kalite inceleme aracı: statik analiz (AST), dinamik analiz (izole çalıştırma) "
+               "ve LLM açıklaması. Skor ve YZ göstergeleri sezgiseldir, kanıt değildir.")
+    static_col, dynamic_col, llm_col = st.columns(3)
+    static_col.success("**Statik katman:** hazır. Kod çalıştırılmadan AST ile incelenir.")
+    if shutil.which("docker"):
+        dynamic_col.success("**Dinamik katman:** Docker bulundu. Süre ve bellek ölçümü yapılabilir.")
+    else:
+        dynamic_col.warning("**Dinamik katman:** Docker bulunamadı. Ölçüm için Docker gerekir.")
+    llm_col.info("**LLM katmanı:** henüz bağlı değil (planlanan adım).")
 
 
 def _read_upload(upload, limit: int = MAX_SOURCE_BYTES) -> str | None:
     if upload.size > limit:
-        st.error(f"File exceeds {limit // 1000} KB")
+        st.error(f"Dosya {limit // 1000} KB sınırını aşıyor")
         return None
     try:
         return upload.getvalue().decode("utf-8-sig")
     except UnicodeDecodeError:
-        st.error("File must be UTF-8")
+        st.error("Dosya UTF-8 olmalı")
         return None
 
 
 def _findings_table(findings: list[dict]) -> None:
     if not findings:
-        st.success("No findings from the enabled rules. This does not guarantee safe or correct code.")
+        st.success("Açık kurallardan bulgu çıkmadı. Bu, kodun güvenli veya doğru olduğunu garanti etmez.")
         return
     categories = sorted({f["category"] for f in findings})
     left, right = st.columns(2)
-    chosen_categories = left.multiselect("Categories", categories, default=categories)
-    chosen_severities = right.multiselect("Severity", SEVERITIES, default=SEVERITIES)
+    chosen_categories = left.multiselect("Kategoriler", categories, default=categories, format_func=_category_tr)
+    chosen_severities = right.multiselect("Önem", SEVERITIES, default=SEVERITIES, format_func=_severity_tr)
     for f in findings:
         if f["category"] not in chosen_categories or f["severity"] not in chosen_severities:
             continue
-        with st.expander(f"{f['severity'].upper()} · {f['rule']} · L{f['line']} · {f['message']}"):
-            cwe = f" · {f['cwe']}" if f.get("cwe") else ""
-            st.write(f"**{f['category']}** · confidence: {f['confidence']}{cwe}")
-            st.write("**Why:**", f["why"])
-            st.write("**Suggested action:**", f["fix"])
-            if f.get("corroborated_by"):
-                st.caption("Confirmed by: " + ", ".join(f["corroborated_by"]))
+        title = f"{_severity_tr(f['severity']).upper()} · {f['rule']} · S{f['line']} · {f['message']}"
+        with st.expander(title):
+            _finding_details(f)
+
+
+def _finding_details(f: dict) -> None:
+    cwe = f" · {f['cwe']}" if f.get("cwe") else ""
+    layer = LAYER_LABEL.get(f.get("source", "AST"), f.get("source", ""))
+    st.write(f"**{_category_tr(f['category'])}** · güven: {CONFIDENCE_TR.get(f['confidence'], f['confidence'])}"
+             f"{cwe} · katman: {layer}")
+    st.write("**Neden sorun?**", f["why"])
+    st.write("**Nasıl düzelir?**", f["fix"])
+    if f.get("corroborated_by"):
+        st.caption("Şunlarla doğrulandı: " + ", ".join(f["corroborated_by"]))
 
 
 def _code_viewer(code: str, findings: list[dict]) -> None:
     lines = sorted({f["line"] for f in findings})
-    focus = st.selectbox("Jump to a finding", [None, *lines],
-                         format_func=lambda n: "All lines" if n is None else f"Line {n}")
+    focus = st.selectbox("Bir bulguya git", [None, *lines],
+                         format_func=lambda n: "Tüm satırlar" if n is None else f"Satır {n}")
     height = min(650, max(220, 100 + len(code.splitlines()) * 23))
     components.html(render_code(code, findings, focus_line=focus), height=height, scrolling=True)
 
 
-def _benchmark_panel(before: str, after: str) -> None:
-    def top_level(code: str) -> set[str]:
-        return {n.name for n in ast.parse(code).body if isinstance(n, ast.FunctionDef)}
+def _impact_metrics(effect: dict) -> None:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Kalite skoru", f"{effect['score_before']} → {effect['score_after']}", delta=effect["score_delta"])
+    c2.metric("Bulgu sayısı", f"{effect['findings_before']} → {effect['findings_after']}",
+              delta=effect["findings_after"] - effect["findings_before"], delta_color="inverse")
+    c3.metric("Çözülen", effect["resolved"])
+    c4.metric("Yeni sorun", effect["introduced"], delta=effect["introduced"], delta_color="inverse")
 
-    common = sorted(top_level(before) & top_level(after))
-    if not common:
-        st.info("Both versions need a top-level function with the same name to enable benchmarking.")
-        return
-    st.warning("Runs the code inside a restricted Docker container (no network, read-only, limited CPU/RAM), "
-               "never on the Streamlit host. Docker is not a perfect security boundary: use trusted code only.")
-    function = st.selectbox("Function to benchmark", common, key="bench_fn")
-    args_text = st.text_input("Positional arguments (JSON array)", value="[]", key="bench_args")
-    kwargs_text = st.text_input("Keyword arguments (JSON object)", value="{}", key="bench_kwargs")
-    repeats = st.slider("Repetitions", 3, 40, 15, key="bench_repeats")
-    consent = st.checkbox("I understand this executes the code inside Docker", key="bench_consent")
-    if st.button("Run isolated benchmark", disabled=not consent, key="bench_run"):
-        try:
-            args, kwargs = json.loads(args_text), json.loads(kwargs_text)
-        except ValueError as exc:
-            st.error(f"Invalid JSON: {exc}")
-            return
-        with st.spinner("Running (the first run may download the Docker image)..."):
-            st.session_state["bench_result"] = benchmark(before, after, function, args, kwargs,
-                                                         BenchmarkOptions(repeats=repeats))
-    result = st.session_state.get("bench_result")
-    if not result:
-        return
-    if not result.get("ok"):
-        st.error(result.get("error", "Benchmark failed"))
-        return
-    b, a = result["before"], result["after"]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Before (median)", f"{b['median_ms']:.4f} ms")
-    c2.metric("After (median)", f"{a['median_ms']:.4f} ms")
-    c3.metric("Speed ratio", f"{b['median_ms'] / a['median_ms']:.2f}×" if a["median_ms"] else "n/a")
-    m1, m2 = st.columns(2)
-    m1.metric("Before peak allocations", f"{b['median_peak_bytes'] / 1024:.1f} KiB")
-    m2.metric("After peak allocations", f"{a['median_peak_bytes'] / 1024:.1f} KiB")
-    st.caption("Outputs matched for this input only. Time and memory were measured in separate rounds. "
-               "tracemalloc counts Python allocations, not process RSS.")
-    st.download_button("Download benchmark JSON", json.dumps(result, indent=2), file_name="benchmark.json")
+
+def _impact_tables(effect: dict) -> None:
+    labels = {"nonblank_lines": "Boş olmayan satır", "branches": "Dallanma", "loops": "Döngü",
+              "functions": "Fonksiyon", "complexity_total": "Karmaşıklık (toplam)", "ast_nodes": "AST düğümü"}
+    frame = pd.DataFrame([{"Ölçüt": label, "Önce": effect["before"][key], "Sonra": effect["after"][key]}
+                          for key, label in labels.items()]).set_index("Ölçüt")
+    st.bar_chart(frame)
+    st.caption("Yalnızca statik sayımlar. Daha az satır veya düğüm, daha hızlı ya da daha iyi kod demek değildir.")
+    for key, title in (("resolved_rules", "Çözülen bulgular"), ("introduced_rules", "Yeni bulgular")):
+        if effect[key]:
+            st.markdown(f"**{title}**")
+            st.dataframe(effect[key], hide_index=True)
+
+
+def _impact_downloads(before: str, after: str, effect: dict) -> None:
+    with st.expander("Birleşik diff"):
+        st.code(unified_diff(before, after) or "Değişiklik yok", language="diff")
+    st.download_button("İyileştirilmiş .py dosyasını indir", after, file_name="improved.py", mime="text/x-python")
+    st.download_button("HTML raporunu indir", to_html((before, analyze(before)), (after, analyze(after))),
+                       file_name="quality_report.html", mime="text/html")
+    st.download_button("Etki JSON'unu indir", json.dumps(effect, indent=2, ensure_ascii=False),
+                       file_name="impact.json")
 
 
 def _impact_panel(before: str, after: str) -> None:
     effect = impact(before, after)
     if not effect["valid"]:
-        st.error("The After version has invalid syntax; correct it to compare.")
+        st.error("Sonra sürümünde sözdizimi hatası var; karşılaştırmak için düzeltin.")
         return
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Quality score", f"{effect['score_before']} → {effect['score_after']}", delta=effect["score_delta"])
-    c2.metric("Findings", f"{effect['findings_before']} → {effect['findings_after']}",
-              delta=effect["findings_after"] - effect["findings_before"], delta_color="inverse")
-    c3.metric("Resolved", effect["resolved"])
-    c4.metric("New issues", effect["introduced"], delta=effect["introduced"], delta_color="inverse")
-    labels = {"nonblank_lines": "Nonblank lines", "branches": "Branches", "loops": "Loops",
-              "functions": "Functions", "complexity_total": "Complexity (total)", "ast_nodes": "AST nodes"}
-    frame = pd.DataFrame([{"Metric": label, "Before": effect["before"][key], "After": effect["after"][key]}
-                          for key, label in labels.items()]).set_index("Metric")
-    st.bar_chart(frame)
-    st.caption("Static counts only. Fewer lines or nodes do not necessarily mean faster or better code.")
-    for key, title in (("resolved_rules", "Resolved"), ("introduced_rules", "New")):
-        if effect[key]:
-            st.markdown(f"**{title} findings**")
-            st.dataframe(effect[key], hide_index=True)
-    st.markdown("**Before → After**")
+    _impact_metrics(effect)
+    _impact_tables(effect)
+    st.markdown("**Önce → Sonra**")
     lines = max(len(before.splitlines()), len(after.splitlines()))
     components.html(render_side_by_side(before, after, analyze(before).issues, analyze(after).issues),
                     height=min(700, max(240, 110 + lines * 23)), scrolling=True)
-    with st.expander("Unified diff"):
-        st.code(unified_diff(before, after) or "No changes", language="diff")
-    st.download_button("Download improved .py", after, file_name="improved.py", mime="text/x-python")
-    st.download_button("Download HTML report", to_html((before, analyze(before)), (after, analyze(after))),
-                       file_name="quality_report.html", mime="text/html")
-    st.download_button("Download impact JSON", json.dumps(effect, indent=2), file_name="impact.json")
-    with st.expander("Optional: measure real speed with Docker"):
-        _benchmark_panel(before, after)
+    _impact_downloads(before, after, effect)
+    st.info("Gerçek hız ve bellek ölçümü için **Dinamik Analiz** sekmesine bakın.")
 
 
 def _effect_label(effect: dict | None) -> str:
     if effect is None:
         return ""
-    return f" · score {effect['score_before']} → {effect['score_after']} ({effect['score_delta']:+d})"
+    return f" · skor {effect['score_before']} → {effect['score_after']} ({effect['score_delta']:+d})"
+
+
+def _patch_preview(source: str, preview: str) -> None:
+    effect = impact(source, preview)
+    if not effect["valid"]:
+        return
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Uygulanırsa skor", f"{effect['score_before']} → {effect['score_after']}", delta=effect["score_delta"])
+    c2.metric("Çözülen bulgu", effect["resolved"])
+    c3.metric("Yeni sorun", effect["introduced"], delta=effect["introduced"], delta_color="inverse")
 
 
 def _patch_panel(source: str, patches: list[dict]) -> str | None:
     if not patches:
-        st.write("No conservative automatic patches available. Other findings need manual review.")
+        st.write("Güvenli otomatik yama yok. Diğer bulgular elle incelenmeli.")
         return None
-    st.caption("Patches are syntax-checked but NOT behavior-verified. Read each caution. "
-               "The score shown next to each patch is its static effect alone.")
+    st.caption("Yamaların sözdizimi denetlenir ama davranışı doğrulanmaz. Her uyarıyı okuyun. "
+               "Her yamanın yanındaki skor yalnızca o yamanın statik etkisidir.")
     effects = patch_effects(source, patches)
     chosen = []
     for index, patch in enumerate(patches):
-        label = f"L{patch['line']} · {patch['rule']} · {patch['description']}{_effect_label(effects[index])}"
+        label = f"S{patch['line']} · {patch['rule']} · {patch['description']}{_effect_label(effects[index])}"
         if st.checkbox(label, key=f"patch_{index}_{hash(source)}"):
             chosen.append(index)
             st.caption("⚠ " + patch["caution"])
@@ -194,20 +203,14 @@ def _patch_panel(source: str, patches: list[dict]) -> str | None:
         except (ValueError, SyntaxError) as exc:
             st.error(str(exc))
         else:
-            effect = impact(source, preview)
-            if effect["valid"]:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Score if applied", f"{effect['score_before']} → {effect['score_after']}",
-                          delta=effect["score_delta"])
-                c2.metric("Findings resolved", effect["resolved"])
-                c3.metric("New issues", effect["introduced"], delta=effect["introduced"], delta_color="inverse")
-    if not st.button("Apply selected fixes", disabled=preview is None):
+            _patch_preview(source, preview)
+    if not st.button("Seçili düzeltmeleri uygula", disabled=preview is None):
         return None
     return preview
 
 
-def _review_tab() -> None:
-    upload = st.file_uploader("Upload a .py file (optional)", type=["py"], key="source_upload")
+def _load_editor() -> str:
+    upload = st.file_uploader(".py dosyası yükle (isteğe bağlı)", type=["py"], key="source_upload")
     if upload is not None:
         signature = (upload.name, upload.size)
         if st.session_state.get("upload_signature") != signature:
@@ -216,53 +219,244 @@ def _review_tab() -> None:
                 st.session_state["editor"] = text
                 st.session_state["upload_signature"] = signature
     st.session_state.setdefault("editor", EXAMPLE)
-    code = st.text_area("Python source", key="editor", height=280)
-    live = st.toggle("Live analysis (re-analyze as you edit)", value=True, key="live_analysis")
+    return st.text_area("Python kaynak kodu", key="editor", height=280)
+
+
+def _run_analysis(code: str) -> bool:
+    try:
+        result = analyze(code)
+    except ValueError as exc:
+        st.error(str(exc))
+        return False
+    st.session_state.update(snapshot=code, result=result, patches=suggest(code) if result.valid else [])
+    st.session_state.pop("after", None)
+    return True
+
+
+def _summary_metrics(result) -> None:
+    metrics = result.metrics
+    cols = st.columns(5)
+    cols[0].metric("Bulgu", len(result.findings))
+    cols[1].metric("Sezgisel skor", metrics["score"])
+    cols[2].metric("Karmaşıklık (en büyük fonksiyon)", metrics["complexity_max_function"])
+    cols[3].metric("YZ göstergesi / 100 satır", metrics["ai_indicators_per_100_lines"])
+    cols[4].metric("Bastırılan (noqa)", result.suppressed)
+    st.caption("YZ göstergeleri zayıf, olasılıksal sinyallerdir (ör. kodu tekrar eden yorumlar, gereksiz geçici "
+               "değişkenler). Yazarlığı kanıtlamazlar ve skoru etkilemezler.")
+
+
+def _review_tab() -> None:
+    code = _load_editor()
+    live = st.toggle("Canlı analiz (düzenledikçe yeniden analiz et)", value=True, key="live_analysis")
     stale = "snapshot" in st.session_state and st.session_state["snapshot"] != code
-    if st.button("Analyze source", type="primary") or (live and stale):
-        try:
-            result = analyze(code)
-        except ValueError as exc:
-            st.error(str(exc))
-            return
-        st.session_state.update(snapshot=code, result=result, patches=suggest(code) if result.valid else [])
-        st.session_state.pop("after", None)
+    if (st.button("Kodu analiz et", type="primary") or (live and stale)) and not _run_analysis(code):
+        return
     result = st.session_state.get("result")
     if result is None:
-        st.info("Select **Analyze source** to start.")
+        st.info("Başlamak için **Kodu analiz et** düğmesine basın.")
         return
     snapshot = st.session_state["snapshot"]
     if snapshot != code:
-        st.warning("The editor changed since the last analysis; analyze again to refresh.")
+        st.warning("Editör son analizden sonra değişti; yenilemek için tekrar analiz edin.")
     if not result.valid:
-        st.error("Invalid Python syntax: " + result.findings[0].why)
+        st.error("Geçersiz Python sözdizimi: " + result.findings[0].why)
         return
-    metrics, findings = result.metrics, result.issues
-    cols = st.columns(5)
-    cols[0].metric("Findings", len(findings))
-    cols[1].metric("Heuristic score", metrics["score"])
-    cols[2].metric("Complexity (max fn)", metrics["complexity_max_function"])
-    cols[3].metric("AI indicators / 100 lines", metrics["ai_indicators_per_100_lines"])
-    cols[4].metric("Suppressed (noqa)", result.suppressed)
-    st.caption("AI indicators are weak probabilistic signals (e.g. restating comments, redundant temporaries). "
-               "They never prove authorship and do not affect the score.")
-    _code_viewer(snapshot, findings)
-    _findings_table(findings)
-    st.subheader("Fixes")
+    _summary_metrics(result)
+    _code_viewer(snapshot, result.issues)
+    _findings_table(result.issues)
+    _fix_section(snapshot)
+
+
+def _fix_section(snapshot: str) -> None:
+    st.subheader("Düzeltmeler")
     patched = _patch_panel(snapshot, st.session_state["patches"])
     if patched is not None:
         st.session_state["after"] = patched
     if "after" in st.session_state:
-        st.subheader("Proposed code")
-        after = st.text_area("Edit the After version", value=st.session_state["after"], height=220)
+        st.subheader("Önerilen kod")
+        after = st.text_area("Sonra sürümünü düzenle", value=st.session_state["after"], height=220)
+        st.session_state["after_edit"] = after
         _impact_panel(snapshot, after)
 
 
+def _current_code() -> str:
+    return st.session_state.get("snapshot") or st.session_state.get("editor", EXAMPLE)
+
+
+def _static_intro() -> None:
+    st.subheader("Statik Analiz: kodu çalıştırmadan inceleme")
+    st.markdown(
+        "Statik analiz, kodu **çalıştırmadan** yalnızca yapısına bakarak inceler. Python'un `ast` modülü kodu bir "
+        "**ağaca** (AST) çevirir, kurallar bu ağaçta gezer ve sorunlu desenleri bulur.")
+    with st.expander("Nasıl çalışır? (adım adım)", expanded=True):
+        st.markdown(
+            "1. **Kod → AST:** `ast.parse` kodu düğümlere böler (fonksiyon, atama, çağrı...).\n"
+            "2. **Kurallar gezer:** 36 kural ağacı dolaşır (güvenlik, performans, kod kokusu, gereksiz kod, YZ göstergesi).\n"
+            "3. **Bulgu üretilir:** her bulgu satır, kategori, önem, güven, neden ve düzeltme bilgisiyle gelir.\n"
+            "4. **Skor ve metrikler:** karmaşıklık, satır ve düğüm sayıları ile sezgisel bir skor hesaplanır.\n"
+            "5. **Güvenlik:** kod hiçbir zaman içe aktarılmaz veya çalıştırılmaz.")
+    with st.expander("Statik analiz neyi göremez?"):
+        st.markdown(
+            "- **Veri akışını** izlemez: `run = eval; run(x)` gibi takma adlar kaçabilir.\n"
+            "- Verinin **gerçek boyutunu** bilmez: iç içe döngü sadece bir ipucudur.\n"
+            "- Kodun **gerçek hızını ve bellek kullanımını** ölçemez; bunun için **Dinamik Analiz** sekmesi vardır.")
+
+
+def _static_tree(code: str, findings: list[dict]) -> None:
+    st.markdown("#### 1) Kod → AST ağacı")
+    st.caption("⚠ ile işaretli düğümler, bir kuralın bulgu ürettiği yerlerdir.")
+    only_flagged = st.checkbox("Yalnızca bulgu çıkan düğümleri ve üst dallarını göster", value=True, key="ast_only")
+    st.code(tree_text(code, findings, only_flagged=only_flagged), language=None)
+
+
+def _static_findings(code: str, findings: list[dict]) -> None:
+    st.markdown("#### 2) Hangi kural hangi düğümde tetiklendi?")
+    if findings:
+        st.dataframe(finding_nodes(code, findings), hide_index=True)
+        st.markdown("#### 3) Kategorilere göre dağılım")
+        st.bar_chart(pd.Series(category_counts(findings), name="Bulgu"))
+    else:
+        st.success("Bu kodda bulgu çıkmadı.")
+
+
+def _static_catalog(findings: list[dict]) -> None:
+    st.markdown("#### 4) Kural kataloğu")
+    rows = rule_table(findings)
+    only_hits = st.checkbox("Yalnızca bu kodda tetiklenen kurallar", value=False, key="catalog_hits")
+    shown = [r for r in rows if r["Bu kodda"] > 0] if only_hits else rows
+    st.dataframe(shown, hide_index=True)
+    st.caption(f"Toplam {len(rows)} kural. Her kuralın kısa açıklaması ve düzeltme önerisi tabloda yer alır.")
+
+
+def _static_tab() -> None:
+    _static_intro()
+    code = _current_code()
+    st.caption(f"Analiz edilen kod: **Kod İnceleme** sekmesindeki editör ({len(code.splitlines())} satır).")
+    try:
+        result = analyze(code)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    if not result.valid:
+        st.error("Geçersiz Python sözdizimi: " + result.findings[0].why)
+        return
+    cols = st.columns(4)
+    cols[0].metric("Bulgu", len(result.findings))
+    cols[1].metric("Sezgisel skor", result.metrics["score"])
+    cols[2].metric("AST düğümü", result.metrics["ast_nodes"])
+    cols[3].metric("Fonksiyon", result.metrics["functions"])
+    _static_tree(code, result.issues)
+    _static_findings(code, result.issues)
+    _static_catalog(result.issues)
+
+
+def _dynamic_intro() -> None:
+    st.subheader("Dinamik Analiz: kodu izole ortamda çalıştırarak ölçme")
+    st.markdown(
+        "Dinamik analiz kodu **gerçekten çalıştırır** ve ölçer: çalışma süresi, bellek ve çıktı. Burada **önce** ve "
+        "**sonra** (düzeltilmiş) sürüm aynı girdiyle Docker kutusunda çalıştırılıp karşılaştırılır.")
+    st.table(pd.DataFrame([
+        {"Kriter": "Kod çalışır mı?", "Statik analiz": "Hayır, yalnızca AST", "Dinamik analiz": "Evet, izole Docker"},
+        {"Kriter": "Ne bulur?", "Statik analiz": "Güvenlik, kod kokusu, desen", "Dinamik analiz": "Süre, bellek, çıktı farkı"},
+        {"Kriter": "Hız", "Statik analiz": "Anında", "Dinamik analiz": "Birkaç saniye"},
+        {"Kriter": "Risk", "Statik analiz": "Yok", "Dinamik analiz": "Docker kutusuyla sınırlandı"},
+    ]).set_index("Kriter"))
+    with st.expander("Güvenlik önlemleri"):
+        st.markdown("Ağ yok, salt-okunur dosya sistemi, tüm yetkiler kapalı, root olmayan kullanıcı, CPU/bellek/süre "
+                    "sınırı. Docker mükemmel bir güvenlik sınırı değildir: yalnızca güvendiğiniz kodu çalıştırın.")
+
+
+def _use_review_versions() -> None:
+    st.session_state["dyn_before"] = st.session_state.get("snapshot", "")
+    st.session_state["dyn_after"] = st.session_state.get("after_edit") or st.session_state.get("after", "")
+
+
+def _dynamic_sources() -> tuple[str, str]:
+    snapshot = st.session_state.get("snapshot", _current_code())
+    st.session_state.setdefault("dyn_before", snapshot)
+    st.session_state.setdefault("dyn_after", st.session_state.get("after_edit") or snapshot)
+    st.button("Kod İnceleme sekmesindeki sürümleri al", on_click=_use_review_versions)
+    left, right = st.columns(2)
+    before = left.text_area("Önce sürümü", key="dyn_before", height=220)
+    after = right.text_area("Sonra sürümü", key="dyn_after", height=220)
+    return before, after
+
+
+def _benchmark_inputs(before: str, after: str) -> dict | None:
+    def top_level(code: str) -> set[str]:
+        return {n.name for n in ast.parse(code).body if isinstance(n, ast.FunctionDef)}
+
+    try:
+        common = sorted(top_level(before) & top_level(after))
+    except SyntaxError:
+        st.error("Sürümlerden birinde sözdizimi hatası var.")
+        return None
+    if not common:
+        st.info("Ölçüm için iki sürümde de aynı isimli bir üst düzey fonksiyon olmalı.")
+        return None
+    function = st.selectbox("Ölçülecek fonksiyon", common, key="bench_fn")
+    args_text = st.text_input("Konumsal argümanlar (JSON dizisi)", value="[]", key="bench_args")
+    kwargs_text = st.text_input("İsimli argümanlar (JSON nesnesi)", value="{}", key="bench_kwargs")
+    repeats = st.slider("Tekrar sayısı", 3, 40, 15, key="bench_repeats")
+    try:
+        args, kwargs = json.loads(args_text), json.loads(kwargs_text)
+    except ValueError as exc:
+        st.error(f"Geçersiz JSON: {exc}")
+        return None
+    return {"function": function, "args": args, "kwargs": kwargs, "repeats": repeats}
+
+
+def _benchmark_result(result: dict) -> None:
+    if not result.get("ok"):
+        st.error(result.get("error", "Ölçüm başarısız"))
+        return
+    b, a = result["before"], result["after"]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Önce (medyan)", f"{b['median_ms']:.4f} ms")
+    c2.metric("Sonra (medyan)", f"{a['median_ms']:.4f} ms")
+    c3.metric("Hız oranı (önce/sonra)", f"{b['median_ms'] / a['median_ms']:.2f}×" if a["median_ms"] else "yok")
+    m1, m2 = st.columns(2)
+    m1.metric("Önce en yüksek bellek ayırma", f"{b['median_peak_bytes'] / 1024:.1f} KiB")
+    m2.metric("Sonra en yüksek bellek ayırma", f"{a['median_peak_bytes'] / 1024:.1f} KiB")
+    st.caption("Çıktılar yalnızca bu girdi için eşleşti. Süre ve bellek ayrı turlarda ölçüldü. "
+               "tracemalloc Python ayırmalarını sayar, işlem RSS'ini değil.")
+    st.download_button("Ölçüm JSON'unu indir", json.dumps(result, indent=2, ensure_ascii=False),
+                       file_name="benchmark.json")
+
+
+def _dynamic_tab() -> None:
+    _dynamic_intro()
+    if not shutil.which("docker"):
+        st.warning("Bu makinede Docker bulunamadı; ölçüm çalışmaz. Docker Desktop kurup açtıktan sonra deneyin.")
+    before, after = _dynamic_sources()
+    settings = _benchmark_inputs(before, after)
+    if settings is None:
+        return
+    consent = st.checkbox("Kodun Docker içinde çalıştırılacağını anlıyorum", key="bench_consent")
+    if st.button("İzole ölçümü başlat", disabled=not consent, key="bench_run"):
+        with st.spinner("Çalışıyor (ilk çalıştırmada Docker imajı indirilebilir)..."):
+            st.session_state["bench_result"] = benchmark(
+                before, after, settings["function"], settings["args"], settings["kwargs"],
+                BenchmarkOptions(repeats=settings["repeats"]))
+    if st.session_state.get("bench_result"):
+        _benchmark_result(st.session_state["bench_result"])
+
+
+def _llm_tab() -> None:
+    st.subheader("LLM Açıklama katmanı")
+    st.info("Bu katman henüz bağlı değil. Planlanan çalışma şekli aşağıda özetlenmiştir.")
+    st.markdown(
+        "- **Görevi:** bulguları kısa Türkçe ile açıklamak ve statik analizin kaçırdığı adayları önermek.\n"
+        "- **Güvence:** LLM'in söylediği her şey AST ile çapraz doğrulanır; doğrulanamayan öneri "
+        "\"doğrulanmadı\" etiketiyle gösterilir.\n"
+        "- **Gizlilik:** API anahtarı koda gömülmez, ortam değişkeninden okunur.")
+
+
 def _project_tab() -> None:
-    st.write("Upload a ZIP of a Python project. Files are analysed statically; "
-             "`__pycache__`, virtualenvs and `.git` are skipped.")
-    archive = st.file_uploader("Project ZIP", type=["zip"], key="project_zip")
-    if archive is None or not st.button("Scan project"):
+    st.write("Bir Python projesinin ZIP dosyasını yükleyin. Dosyalar statik olarak incelenir; "
+             "`__pycache__`, sanal ortamlar ve `.git` atlanır.")
+    archive = st.file_uploader("Proje ZIP dosyası", type=["zip"], key="project_zip")
+    if archive is None or not st.button("Projeyi tara"):
         return
     try:
         files = scan_archive(archive.getvalue())
@@ -271,25 +465,49 @@ def _project_tab() -> None:
         return
     summary = project_summary(files)
     cols = st.columns(4)
-    cols[0].metric("Files analysed", f"{summary['analyzed_files']}/{summary['files']}")
-    cols[1].metric("Findings", summary["issues"])
-    cols[2].metric("High priority", summary["high_priority"])
-    cols[3].metric("Syntax-error files", summary["syntax_error_files"])
+    cols[0].metric("İncelenen dosya", f"{summary['analyzed_files']}/{summary['files']}")
+    cols[1].metric("Bulgu", summary["issues"])
+    cols[2].metric("Yüksek öncelik", summary["high_priority"])
+    cols[3].metric("Sözdizimi hatalı dosya", summary["syntax_error_files"])
     st.dataframe([{k: v for k, v in f.items() if k in ("file", "line", "rule", "severity", "category", "message")}
                   for f in summary["findings"]], hide_index=True)
     entries = analyzed(files)
-    st.download_button("Download SARIF", to_sarif(entries), file_name="results.sarif.json")
-    st.download_button("Download JSON", to_json(entries), file_name="project_review.json")
+    st.download_button("SARIF indir", to_sarif(entries), file_name="results.sarif.json")
+    st.download_button("JSON indir", to_json(entries), file_name="project_review.json")
+
+
+def _comparison_rows(pair: dict) -> list[dict]:
+    rows = []
+    for key, name in (("defect_density", "Kusur yoğunluğu"), ("ai_indicator_density", "YZ göstergesi yoğunluğu")):
+        stat = pair[key]
+        if stat["computable"]:
+            rows.append({"Ölçüt": name, "Ortalama fark (a-b)": stat["mean_difference"], "%95 GA": str(stat["ci95"]),
+                         "Mann-Whitney p": stat["p_value"], "Bonferroni p": stat["p_adjusted_bonferroni"],
+                         "Cliff's delta": stat["cliffs_delta"],
+                         "Etki büyüklüğü": EFFECT_TR.get(stat["effect_size"], stat["effect_size"])})
+        else:
+            rows.append({"Ölçüt": name, "Ortalama fark (a-b)": stat["reason"]})
+    return rows
+
+
+def _label_summary(result: dict) -> None:
+    names = {"samples": "Örnek", "valid_samples": "Geçerli örnek", "syntax_errors": "Sözdizimi hatası",
+             "syntax_error_rate": "Hata oranı", "nonblank_lines": "Boş olmayan satır", "findings": "Bulgu",
+             "pooled_findings_per_100_lines": "100 satırda bulgu", "mean_defect_density": "Ort. kusur yoğunluğu",
+             "mean_ai_indicator_density": "Ort. YZ göstergesi yoğunluğu"}
+    st.markdown("**Etiket özeti**")
+    st.dataframe([{"Etiket": k, **{names.get(n, n): v for n, v in s.items() if n != "category_counts"}}
+                  for k, s in result["labels"].items()], hide_index=True)
 
 
 def _dataset_tab() -> None:
-    st.write("CSV with columns `label,code`, one sample per row (see `data/example_dataset.csv`). "
-             "Use documented provenance labels such as `human` and `ai`; authorship is never inferred.")
-    upload = st.file_uploader("Dataset CSV", type=["csv"], key="dataset")
-    if upload is None or not st.button("Evaluate dataset"):
+    st.write("`etiket,kod` sütunlu bir CSV yükleyin; her satır bir örnektir (bkz. `data/example_dataset.csv`). "
+             "`human` ve `ai` gibi kaynağı belgelenmiş etiketler kullanın; yazarlık asla tahmin edilmez.")
+    upload = st.file_uploader("Veri seti CSV", type=["csv"], key="dataset")
+    if upload is None or not st.button("Veri setini değerlendir"):
         return
     if upload.size > 5_000_000:
-        st.error("Maximum CSV size is 5 MB")
+        st.error("CSV en fazla 5 MB olabilir")
         return
     try:
         result = evaluate_dataset(load_dataset(upload.getvalue()))
@@ -298,45 +516,38 @@ def _dataset_tab() -> None:
         return
     for warning in result["warnings"]:
         st.warning(warning)
-    st.markdown("**Per-label summary**")
-    st.dataframe([{"label": k, **{n: v for n, v in s.items() if n != "category_counts"}}
-                  for k, s in result["labels"].items()], hide_index=True)
+    _label_summary(result)
     for pair in result["comparisons"]:
-        st.markdown(f"**{pair['a']} vs {pair['b']}** (n = {pair['n_a']} / {pair['n_b']})")
-        rows = []
-        for key, name in (("defect_density", "Defect density"), ("ai_indicator_density", "AI-indicator density")):
-            stat = pair[key]
-            if stat["computable"]:
-                rows.append({"metric": name, "mean diff (a-b)": stat["mean_difference"], "95% CI": str(stat["ci95"]),
-                             "Mann-Whitney p": stat["p_value"], "Bonferroni p": stat["p_adjusted_bonferroni"],
-                             "Cliff's delta": stat["cliffs_delta"], "effect": stat["effect_size"]})
-            else:
-                rows.append({"metric": name, "mean diff (a-b)": stat["reason"]})
-        st.dataframe(rows, hide_index=True)
-        st.caption(f"Syntax-error rate difference (Fisher exact p): {pair['syntax_error_fisher_p']}")
-    st.download_button("Download evaluation JSON", json.dumps(result, indent=2), file_name="evaluation.json")
+        st.markdown(f"**{pair['a']} ve {pair['b']}** (n = {pair['n_a']} / {pair['n_b']})")
+        st.dataframe(_comparison_rows(pair), hide_index=True)
+        st.caption(f"Sözdizimi hata oranı farkı (Fisher exact p): {pair['syntax_error_fisher_p']}")
+    st.download_button("Değerlendirme JSON'unu indir", json.dumps(result, indent=2, ensure_ascii=False),
+                       file_name="evaluation.json")
 
 
 def _evaluation_tab() -> None:
-    st.write("Precision and recall of every rule against the hand-labeled snippets in "
-             "`quality_studio/ground_truth.py`.")
-    if not st.button("Run rule evaluation"):
+    st.write("Her kuralın kesinlik (precision) ve duyarlılık (recall) değeri, "
+             "`quality_studio/ground_truth.py` içindeki elle etiketli kod parçalarına göre ölçülür.")
+    if not st.button("Kural değerlendirmesini çalıştır"):
         return
     report = evaluate()
     micro = report["micro"]
     cols = st.columns(4)
-    cols[0].metric("Cases", report["cases"])
-    cols[1].metric("Precision", micro["precision"])
-    cols[2].metric("Recall", micro["recall"])
+    cols[0].metric("Vaka", report["cases"])
+    cols[1].metric("Kesinlik (precision)", micro["precision"])
+    cols[2].metric("Duyarlılık (recall)", micro["recall"])
     cols[3].metric("F1", micro["f1"])
-    st.caption(f"95% CI: precision {micro['precision_ci95']}, recall {micro['recall_ci95']}. " + report["caveat"])
-    st.dataframe([{"rule": rule, **row} for rule, row in report["rules"].items()], hide_index=True)
+    st.caption(f"%95 GA: kesinlik {micro['precision_ci95']}, duyarlılık {micro['recall_ci95']}. " + report["caveat"])
+    st.dataframe([{"kural": rule, **row} for rule, row in report["rules"].items()], hide_index=True)
     if report["mismatches"]:
-        st.markdown("**Disagreements between labels and engine**")
+        st.markdown("**Etiketler ile motor arasındaki farklar**")
         st.dataframe(report["mismatches"], hide_index=True)
 
 
-tabs = st.tabs(["Code Review", "Project (ZIP)", "Dataset Comparison", "Rule Evaluation"])
-for tab, render in zip(tabs, (_review_tab, _project_tab, _dataset_tab, _evaluation_tab)):
+_header()
+TAB_NAMES = ["Kod İnceleme", "Statik Analiz", "Dinamik Analiz", "LLM Açıklama", "İnsan vs YZ", "Proje (ZIP)",
+             "Kural Değerlendirmesi"]
+RENDERERS = (_review_tab, _static_tab, _dynamic_tab, _llm_tab, _dataset_tab, _project_tab, _evaluation_tab)
+for tab, render in zip(st.tabs(TAB_NAMES), RENDERERS):
     with tab:
         render()

@@ -16,8 +16,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Arayüz sekmeleri: **Code Review** (bulgular, satır görünümü, yamalar, etki analizi, isteğe bağlı Docker benchmark),
-**Project (ZIP)**, **Dataset Comparison**, **Rule Evaluation**.
+Arayüz tamamen Türkçedir. Sekmeler:
+
+| Sekme | Ne gösterir |
+|---|---|
+| **Kod İnceleme** | bulgular, satır görünümü, yamalar, önce/sonra etki analizi |
+| **Statik Analiz** | AST ağacı, hangi kuralın hangi düğümde tetiklendiği, kategori dağılımı, 36 kurallık katalog |
+| **Dinamik Analiz** | önce/sonra kodunu Docker'da izole çalıştırıp süre, bellek ve çıktıyı karşılaştırır |
+| **LLM Açıklama** | planlanan katman (henüz bağlı değil) |
+| **İnsan vs YZ** | etiketli veri setinde istatistiksel karşılaştırma |
+| **Proje (ZIP)** | ZIP olarak yüklenen projenin statik taraması |
+| **Kural Değerlendirmesi** | kural bazında precision/recall ölçümü |
 
 ## Komut satırı
 

@@ -71,8 +71,8 @@ def _none_comparison(source: str, offsets: _Offsets, node: ast.Compare) -> Patch
     replacement = f"{left_text} {operator} {right_text}"
     if old == replacement:
         return None
-    return Patch("CQ104", node.lineno, old, replacement, "Use identity comparison for None",
-                 "Behavior changes if a custom __eq__ was intentionally relied on.", start, end)
+    return Patch("CQ104", node.lineno, old, replacement, "None için kimlik karşılaştırması kullan",
+                 "Davranış değişir: özel bir __eq__ kasıtlı olarak kullanılıyorsa.", start, end)
 
 
 def _bare_except(source: str, offsets: _Offsets, node: ast.ExceptHandler) -> Patch | None:
@@ -80,8 +80,8 @@ def _bare_except(source: str, offsets: _Offsets, node: ast.ExceptHandler) -> Pat
     keyword_end = start + len("except")
     if source[start:keyword_end] != "except" or not re.match(r"\s*:", source[keyword_end:keyword_end + 20]):
         return None
-    return Patch("CQ201", node.lineno, "", " Exception", "Catch Exception instead of BaseException",
-                 "Behavior change: KeyboardInterrupt and SystemExit will no longer be caught.",
+    return Patch("CQ201", node.lineno, "", " Exception", "BaseException yerine Exception yakala",
+                 "Davranış değişir: KeyboardInterrupt ve SystemExit artık yakalanmaz.",
                  keyword_end, keyword_end)
 
 
@@ -95,8 +95,8 @@ def _yaml_load(source: str, offsets: _Offsets, node: ast.Call, yaml_names: set[s
     start = offsets.index(func.lineno, func.col_offset)
     end = offsets.index(func.end_lineno, func.end_col_offset)
     old = source[start:end]
-    return Patch("SEC107", node.lineno, old, f"{func.value.id}.safe_load", "Use yaml.safe_load",
-                 "safe_load rejects custom Python tags; documents relying on them will fail to load.",
+    return Patch("SEC107", node.lineno, old, f"{func.value.id}.safe_load", "yaml.safe_load kullan",
+                 "safe_load özel Python etiketlerini reddeder; onlara dayanan belgeler yüklenemez.",
                  start, end)
 
 
@@ -123,9 +123,9 @@ def apply(source: str, patches: list[dict], selected) -> str:
     last_end = -1
     for patch in chosen:
         if patch["start"] < last_end:
-            raise ValueError("Overlapping patches")
+            raise ValueError("Yamalar çakışıyor")
         if source[patch["start"]:patch["end"]] != patch["before"]:
-            raise ValueError("Stale patch; analyze again")
+            raise ValueError("Yama eskimiş; yeniden analiz edin")
         last_end = patch["end"]
     result = source
     for patch in reversed(chosen):

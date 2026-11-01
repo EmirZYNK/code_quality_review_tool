@@ -120,13 +120,13 @@ class _Visitor(ast.NodeVisitor):
         for key, value in zip(node.keys, node.values):
             if key is not None and is_str_const(key) and looks_like_secret_name(key.value):
                 if _literal_secret(value):
-                    self.ctx.report("SEC105", value, f"Possible hardcoded credential in key '{key.value}'")
+                    self.ctx.report("SEC105", value, f"Koda gömülü olası gizli bilgi, anahtar '{key.value}'")
         self.generic_visit(node)
 
     def _credential(self, target: ast.AST, value: ast.AST, node: ast.AST) -> None:
         name = _target_name(target)
         if name and looks_like_secret_name(name) and _literal_secret(value):
-            self.ctx.report("SEC105", node, f"Possible hardcoded credential in '{name}'")
+            self.ctx.report("SEC105", node, f"Koda gömülü olası gizli bilgi: '{name}'")
 
     def _credential_defaults(self, func) -> None:
         positional = [*func.args.posonlyargs, *func.args.args]
@@ -134,7 +134,7 @@ class _Visitor(ast.NodeVisitor):
         pairs += [(a, d) for a, d in zip(func.args.kwonlyargs, func.args.kw_defaults) if d is not None]
         for arg, default in pairs:
             if looks_like_secret_name(arg.arg) and _literal_secret(default):
-                self.ctx.report("SEC105", default, f"Possible hardcoded credential in default of '{arg.arg}'")
+                self.ctx.report("SEC105", default, f"Koda gömülü olası gizli bilgi, '{arg.arg}' varsayılan değeri")
 
     # -- calls ---------------------------------------------------------------
     def visit_Call(self, node: ast.Call):
@@ -145,13 +145,13 @@ class _Visitor(ast.NodeVisitor):
         self._hash_and_tls(node, name)
         for keyword in node.keywords:
             if keyword.arg and looks_like_secret_name(keyword.arg) and _literal_secret(keyword.value):
-                self.ctx.report("SEC105", keyword.value, f"Possible hardcoded credential in argument '{keyword.arg}'")
+                self.ctx.report("SEC105", keyword.value, f"Koda gömülü olası gizli bilgi, '{keyword.arg}' argümanı")
         self.generic_visit(node)
 
     def _exec_and_shell(self, node: ast.Call, name: str) -> None:
         report = self.ctx.report
         if name in _EXEC_NAMES:
-            report("SEC101", node, f"Use of {name.split('.')[-1]}()")
+            report("SEC101", node, f"{name.split('.')[-1]}() kullanımı")
         elif name in _DESERIALIZE:
             report("SEC102", node)
         elif name in _SHELL_FUNCS:
@@ -174,12 +174,12 @@ class _Visitor(ast.NodeVisitor):
 
     def _yaml(self, node: ast.Call, name: str) -> None:
         if name in _YAML_UNSAFE:
-            self.ctx.report("SEC107", node, f"Use of {name}()")
+            self.ctx.report("SEC107", node, f"{name}() kullanımı")
         elif name in _YAML_LOAD:
             loader = _keyword_value(node, "Loader", position=1)
             loader_name = self.ctx.dotted(loader) if loader is not None else ""
             if not loader_name.endswith(("SafeLoader", "BaseLoader")):
-                self.ctx.report("SEC107", node, f"{name}() without a safe loader")
+                self.ctx.report("SEC107", node, f"{name}() güvenli yükleyici olmadan")
 
     def _hash_and_tls(self, node: ast.Call, name: str) -> None:
         if name in {f"hashlib.{h}" for h in _WEAK_HASHES} or (

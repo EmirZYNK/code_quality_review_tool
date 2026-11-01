@@ -74,6 +74,6 @@ def evaluate(cases: list[Case] | None = None, config: Config | None = None) -> d
             "recall_ci95": wilson_interval(tp, tp + fn),
         },
         "mismatches": mismatches,
-        "caveat": ("Labels were written by the project author for this tool: a regression and sanity "
-                   "benchmark on a small synthetic set, not an estimate of accuracy on real-world code."),
+        "caveat": ("Etiketleri bu aracın yazarı hazırladı: küçük ve sentetik bir kümede regresyon ve akıl sağlığı "
+                   "testidir, gerçek dünya kodundaki doğruluğun tahmini değildir."),
     }

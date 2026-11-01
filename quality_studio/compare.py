@@ -36,15 +36,15 @@ def load_dataset(raw: bytes | str, max_rows: int = MAX_ROWS, max_chars: int = MA
         samples = []
         for number, row in enumerate(reader, start=2):
             if len(samples) >= max_rows:
-                raise ValueError(f"Maximum {max_rows} samples")
+                raise ValueError(f"En fazla {max_rows} örnek olabilir")
             label, code = (row["label"] or "").strip(), row["code"] or ""
             if not label:
-                raise ValueError(f"Row {number}: empty label")
+                raise ValueError(f"Satır {number}: etiket boş")
             if len(code) > max_chars:
-                raise ValueError(f"Row {number}: sample exceeds {max_chars // 1000} KB")
+                raise ValueError(f"Satır {number}: örnek {max_chars // 1000} KB sınırını aşıyor")
             samples.append((label, code))
     except csv.Error as exc:
-        raise ValueError(f"Invalid CSV: {exc}") from exc
+        raise ValueError(f"Geçersiz CSV: {exc}") from exc
     finally:
         csv.field_size_limit(previous)
     if not samples:
@@ -87,7 +87,7 @@ def bootstrap_mean_difference(a: list[float], b: list[float], *, seed: int = 0,
 def compare_metric(a: list[float], b: list[float], *, seed: int = 0) -> dict:
     """Two-sample comparison of one per-sample metric (a minus b)."""
     if len(a) < 2 or len(b) < 2:
-        return {"computable": False, "reason": "Each group needs at least 2 valid samples."}
+        return {"computable": False, "reason": "Her grupta en az 2 geçerli örnek gerekir."}
     if len(set(a) | set(b)) == 1:
         u, p = len(a) * len(b) / 2, 1.0
     else:
@@ -162,13 +162,13 @@ def _warnings(summary: dict[str, dict]) -> list[str]:
     warnings = []
     for label, s in summary.items():
         if s["syntax_errors"]:
-            warnings.append(f"'{label}': {s['syntax_errors']} of {s['samples']} samples had syntax errors "
-                            "and are excluded from density statistics (reported separately).")
+            warnings.append(f"'{label}': {s['samples']} örneğin {s['syntax_errors']} tanesinde sözdizimi hatası var; "
+                            "yoğunluk istatistiklerinden çıkarıldı (ayrıca raporlanır).")
         if s["valid_samples"] < MIN_GROUP_FOR_INFERENCE:
-            warnings.append(f"'{label}': only {s['valid_samples']} valid samples; "
-                            f"p-values and intervals are unreliable below {MIN_GROUP_FOR_INFERENCE}.")
+            warnings.append(f"'{label}': yalnızca {s['valid_samples']} geçerli örnek var; "
+                            f"{MIN_GROUP_FOR_INFERENCE} altında p-değerleri ve aralıklar güvenilmezdir.")
     if len(summary) < 2:
-        warnings.append("At least two labels are needed for a comparison.")
+        warnings.append("Karşılaştırma için en az iki etiket gerekir.")
     return warnings
 
 

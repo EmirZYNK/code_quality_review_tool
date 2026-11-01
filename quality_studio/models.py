@@ -17,6 +17,20 @@ CATEGORIES = (
     "Syntax",
 )
 
+# Arayüzde ve raporlarda gösterilen Türkçe adlar (iç anahtarlar İngilizce kalır).
+CATEGORY_TR = {
+    "Security": "Güvenlik",
+    "Performance": "Performans",
+    "Code Smell": "Kod Kokusu",
+    "Style": "Stil",
+    "Reliability": "Güvenilirlik",
+    "Redundancy": "Gereksiz Kod",
+    "AI Pattern": "YZ Göstergesi",
+    "Syntax": "Sözdizimi",
+}
+SEVERITY_TR = {"critical": "kritik", "high": "yüksek", "medium": "orta", "low": "düşük", "info": "bilgi"}
+CONFIDENCE_TR = {"high": "yüksek", "medium": "orta", "low": "düşük"}
+
 # Categories that describe probabilistic indicators rather than defects.
 # They are reported but never lower the quality score.
 NON_DEFECT_CATEGORIES = frozenset({"AI Pattern"})

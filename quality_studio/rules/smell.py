@@ -67,18 +67,18 @@ class _Visitor(ast.NodeVisitor):
         report = self.ctx.report
         length = (node.end_lineno or node.lineno) - node.lineno + 1
         if length > cfg.max_function_lines:
-            report("CQ101", node, f"Long function ({length} lines)")
+            report("CQ101", node, f"Uzun fonksiyon ({length} satır)")
         params = [a.arg for a in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
                   if a.arg not in {"self", "cls"}]
         if len(params) > cfg.max_parameters:
-            report("CQ102", node, f"Too many parameters ({len(params)})")
+            report("CQ102", node, f"Çok fazla parametre ({len(params)})")
         complexity = function_complexity(node)
         if complexity > cfg.max_complexity:
             severity = "high" if complexity > 2 * cfg.max_complexity else "medium"
-            report("CQ107", node, f"High cyclomatic complexity ({complexity})", severity=severity)
+            report("CQ107", node, f"Yüksek karmaşıklık ({complexity})", severity=severity)
         depth, deepest = _max_nesting(node)
         if depth > cfg.max_nesting and deepest is not None:
-            report("CQ108", deepest, f"Control flow nested {depth} levels deep")
+            report("CQ108", deepest, f"Akış {depth} seviye iç içe")
         self._docstring(node)
         self._mutable_defaults(node)
         self.function_depth += 1
@@ -120,7 +120,7 @@ class _Visitor(ast.NodeVisitor):
             if not isinstance(op, (ast.Eq, ast.NotEq)):
                 continue
             if _is_none(left) or _is_none(right):
-                self.ctx.report("CQ104", node, "Comparison to None using ==/!=")
+                self.ctx.report("CQ104", node, "None ile ==/!= karşılaştırması")
                 break
             if _is_bool(left) or _is_bool(right):
                 self.ctx.report("CQ106", node)

@@ -39,7 +39,7 @@ CASES: list[Case] = [
     _c("sec101_exec", "exec(source_text)\n", "SEC101"),
     _c("sec101_literal_eval_ok", "import ast\nvalue = ast.literal_eval(text)\nprint(value)\n"),
     _c("sec101_method_named_eval_ok", "model.eval()\n"),
-    _c("sec101_alias_assignment", "run = eval\nrun(user_input)\n", "SEC101", note="known limitation: alias via assignment"),
+    _c("sec101_alias_assignment", "run = eval\nrun(user_input)\n", "SEC101", note="bilinen sınırlama: atama ile takma ad"),
     # ---- SEC102 -----------------------------------------------------------
     _c("sec102_loads", "import pickle\nobj = pickle.loads(blob)\nprint(obj)\n", "SEC102"),
     _c("sec102_alias", "import pickle as p\nobj = p.load(handle)\nprint(obj)\n", "SEC102"),
@@ -54,7 +54,7 @@ CASES: list[Case] = [
     _c("sec106_from_import", "from os import system\nsystem(command)\n", "SEC106"),
     _c("sec106_popen", "import os\nstream = os.popen(command)\nprint(stream)\n", "SEC106"),
     _c("sec106_path_join_ok", "import os\nprint(os.path.join('a', 'b'))\n"),
-    _c("sec106_getattr", "import os\ngetattr(os, 'system')(command)\n", "SEC106", note="known limitation: dynamic attribute lookup"),
+    _c("sec106_getattr", "import os\ngetattr(os, 'system')(command)\n", "SEC106", note="bilinen sınırlama: dinamik öznitelik arama"),
     # ---- SEC104 -----------------------------------------------------------
     _c("sec104_concat", "def _f(cur, name):\n    cur.execute('SELECT * FROM t WHERE n = ' + name)\n", "SEC104"),
     _c("sec104_fstring", "def _f(cur, name):\n    cur.execute(f'SELECT * FROM t WHERE n = {name}')\n", "SEC104"),
@@ -63,7 +63,7 @@ CASES: list[Case] = [
     _c("sec104_variable", "def _f(cur, name):\n    query = 'SELECT * FROM t WHERE n = ' + name\n    cur.execute(query)\n", "SEC104"),
     _c("sec104_parameterized_ok", "def _f(cur, name):\n    cur.execute('SELECT * FROM t WHERE n = ?', (name,))\n"),
     _c("sec104_constant_concat_ok", "def _f(cur):\n    cur.execute('SELECT 1' + ' FROM t')\n"),
-    _c("sec104_helper_call_ok", "def _f(cur):\n    cur.execute(build_query())\n", note="opaque helper: treated as benign"),
+    _c("sec104_helper_call_ok", "def _f(cur):\n    cur.execute(build_query())\n", note="yardımcı fonksiyonun içi görünmez: zararsız sayıldı"),
     # ---- SEC105 -----------------------------------------------------------
     _c("sec105_assign", "password = 'hunter2'\n", "SEC105"),
     _c("sec105_attribute", "class _A:\n    def __init__(self):\n        self.password = 'abc'\n", "SEC105"),
@@ -76,7 +76,7 @@ CASES: list[Case] = [
     _c("sec105_max_tokens_ok", "max_tokens = '512'\ntokenizer = 'bpe'\n"),
     _c("sec105_environment_ok", "import os\npassword = os.environ['DB_PASSWORD']\n"),
     _c("sec105_empty_ok", "password = ''\n"),
-    _c("sec105_indirect_key", "KEY = 'password'\nconfig = {KEY: 'abc'}\n", "SEC105", note="known limitation: key held in a variable"),
+    _c("sec105_indirect_key", "KEY = 'password'\nconfig = {KEY: 'abc'}\n", "SEC105", note="bilinen sınırlama: anahtar bir değişkende tutuluyor"),
     # ---- SEC107 -----------------------------------------------------------
     _c("sec107_load", "import yaml\ndata = yaml.load(text)\nprint(data)\n", "SEC107"),
     _c("sec107_full_loader", "import yaml\ndata = yaml.load(text, Loader=yaml.Loader)\nprint(data)\n", "SEC107"),

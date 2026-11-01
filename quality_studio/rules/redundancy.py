@@ -76,7 +76,7 @@ def _unused_imports(ctx: Context) -> None:
     used |= _annotation_names(ctx.tree) | _exported_names(ctx.tree)
     for node, shown, bound in _import_bindings(ctx.tree, _guarded_by_import_error(ctx.tree)):
         if bound not in used:
-            ctx.report("RED001", node, f"Unused import '{shown}'")
+            ctx.report("RED001", node, f"Kullanılmayan import '{shown}'")
 
 
 def _uses_dynamic_scope(func: ast.AST) -> bool:
@@ -105,7 +105,7 @@ def _unused_in_function(ctx: Context, func: ast.AST) -> None:
         if name.startswith("_") or name in ignored or name in reported:
             continue
         reported.add(name)
-        ctx.report("RED002", anchor, f"Unused local variable '{name}'")
+        ctx.report("RED002", anchor, f"Kullanılmayan yerel değişken '{name}'")
 
 
 def _unused_variables(ctx: Context) -> None:
@@ -153,7 +153,7 @@ def _duplicate_functions(ctx: Context) -> list[tuple[int, int]]:
         if original is None:
             seen[key] = func
             continue
-        ctx.report("RED004", func, f"Function '{func.name}' has the same body as '{original.name}' (line {original.lineno})")
+        ctx.report("RED004", func, f"'{func.name}' fonksiyonunun gövdesi '{original.name}' ile aynı (satır {original.lineno})")
         reported.append((func.lineno, func.end_lineno or func.lineno))
     return reported
 
@@ -182,14 +182,14 @@ def _duplicate_blocks(ctx: Context, skip: list[tuple[int, int]]) -> None:
         claimed.append(first)
         for span in (sp for sp in spans[1:] if not _overlaps(*sp, claimed)):
             claimed.append(span)
-            ctx.report("RED003", ctx.tree, f"Duplicated block (same as lines {first[0]}-{first[1]})", line=span[0])
+            ctx.report("RED003", ctx.tree, f"Tekrarlanan blok (satır {first[0]}-{first[1]} ile aynı)", line=span[0])
 
 
 def _dead_code_and_pass(ctx: Context) -> None:
     for block in statement_lists(ctx.tree):
         for index, stmt in enumerate(block[:-1]):
             if isinstance(stmt, _TERMINATORS):
-                ctx.report("RED005", block[index + 1], "Unreachable code")
+                ctx.report("RED005", block[index + 1], "Erişilemeyen kod")
                 break
         if len(block) > 1:
             for stmt in block:

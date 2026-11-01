@@ -117,10 +117,10 @@ class _Visitor(ast.NodeVisitor):
         levels = loop_depth(node, config.small_iteration_limit)
         if levels >= max(2, config.min_loop_nest_depth):
             severity, confidence = _SEVERITY_BY_DEPTH.get(levels, ("high", "medium"))
-            self.ctx.report("PERF101", node, f"Loop nest of depth {levels}",
+            self.ctx.report("PERF101", node, f"{levels} seviyeli iç içe döngü",
                             severity=severity, confidence=confidence)
         elif levels >= 2 and _pairwise_same_collection(node):
-            self.ctx.report("PERF101", node, "All-pairs iteration over the same collection (quadratic)",
+            self.ctx.report("PERF101", node, "Aynı koleksiyonda tüm çiftler üzerinde döngü (karesel maliyet)",
                             severity="medium", confidence="medium")
 
     visit_For = visit_AsyncFor = visit_While = _enter_loop

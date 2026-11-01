@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — Türkçe arayüz ve statik/dinamik sekmeleri
+
+### Added
+- `quality_studio/astview.py`: AST ağacı metni, bulgu-düğüm eşlemesi, kategori sayıları ve kural tablosu.
+- Arayüzde **Statik Analiz** sekmesi (AST ağacı, tetiklenen kurallar, dağılım, kural kataloğu) ve **Dinamik Analiz**
+  sekmesi (Docker ile önce/sonra ölçümü, statik/dinamik karşılaştırma tablosu); **LLM Açıklama** için yer tutucu sekme.
+- Katman durumu satırı: statik hazır, dinamik (Docker bulundu mu), LLM bağlı değil.
+- `models.py`: `CATEGORY_TR`, `SEVERITY_TR`, `CONFIDENCE_TR` görüntüleme sözlükleri (iç anahtarlar İngilizce kalır).
+- `tests/test_astview.py` ve sahte `streamlit` ile `tests/test_app_smoke.py`.
+
+### Changed
+- 36 kuralın adı, "neden sorun?" ve "nasıl düzelir?" metinleri ile bulgu mesajları Türkçe ve kısa hale getirildi.
+- Arayüz, CLI yardım metinleri, rapor (HTML/metin), yama açıklamaları, diff/kod görünümü ve hata mesajları Türkçeleştirildi.
+- Docker benchmark paneli "Kod İnceleme" içinden çıkarılıp **Dinamik Analiz** sekmesine taşındı.
+- `benchmark.py` hata mesajları henüz İngilizce (Dinamik katman adımında çevrilecek).
+
 ## Unreleased — dynamic before/after
 
 ### Added
