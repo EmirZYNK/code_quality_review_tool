@@ -102,13 +102,31 @@ except Exception as exc:
 '''
 
 
+def find_docker() -> str | None:
+    """docker komutunu bulur: önce PATH, sonra Docker Desktop'ın bilinen kurulum klasörleri.
+
+    Windows'ta Docker kurulumundan önce açılmış pencerelerde PATH güncel olmayabilir; bu yedek arama
+    kullanıcıyı bilgisayarı yeniden başlatmaktan kurtarır.
+    """
+    found = shutil.which("docker")
+    if found:
+        return found
+    roots = ((os.environ.get("LOCALAPPDATA"), Path("Programs/DockerDesktop/resources/bin/docker.exe")),
+             (os.environ.get("ProgramFiles"), Path("Docker/Docker/resources/bin/docker.exe")))
+    for root, relative in roots:
+        if root and (Path(root) / relative).is_file():
+            return str(Path(root) / relative)
+    return None
+
+
 def _docker(*args: str, timeout: int) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run([find_docker() or "docker", *args], capture_output=True, text=True,
+                          timeout=timeout, check=False)
 
 
 def docker_status() -> dict:
     """Docker'ın durumunu üç basamakta döndürür: komut var mı, servis çalışıyor mu, imaj indirilmiş mi."""
-    status = {"cli": bool(shutil.which("docker")), "daemon": False, "image": False}
+    status = {"cli": bool(find_docker()), "daemon": False, "image": False}
     if not status["cli"]:
         return status
     with contextlib.suppress(subprocess.TimeoutExpired, OSError):
@@ -157,7 +175,7 @@ def _validate(before: str, after: str, function: str, args, kwargs) -> str | Non
 
 
 def _docker_command(folder: Path, name: str) -> list[str]:
-    return ["docker", "run", "--rm", "--name", name, "--network", "none", "--read-only",
+    return [find_docker() or "docker", "run", "--rm", "--name", name, "--network", "none", "--read-only",
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64",
             "--memory", "256m", "--cpus", "1", "--user", "65534:65534",
             "--mount", f"type=bind,src={folder},dst=/work,readonly",
@@ -249,7 +267,7 @@ def benchmark(before: str, after: str, function: str, args=None, kwargs=None,
     """Bir fonksiyonun iki sürümünü çalıştırıp karşılaştırır (Docker kutusunda ya da yerel yedek modda)."""
     if options.mode not in ("docker", "yerel"):
         return {"ok": False, "error": "Geçersiz mod: 'docker' veya 'yerel' olmalı."}
-    if options.mode == "docker" and not shutil.which("docker"):
+    if options.mode == "docker" and not find_docker():
         return {"ok": False, "error": "Docker komutu kurulu değil ya da PATH içinde yok. "
                                       "Docker Desktop'ı kurun veya 'yerel' yedek modu kullanın."}
     args = [] if args is None else args

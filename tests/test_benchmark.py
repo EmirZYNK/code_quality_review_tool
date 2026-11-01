@@ -167,5 +167,32 @@ class SummaryAndStatusTests(unittest.TestCase):
         self.assertFalse(status["daemon"])
 
 
+class FindDockerTests(unittest.TestCase):
+    def test_path_wins_when_available(self):
+        with patch.object(bench.shutil, "which", return_value="/usr/bin/docker"):
+            self.assertEqual(bench.find_docker(), "/usr/bin/docker")
+
+    def test_falls_back_to_docker_desktop_folder(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = bench.Path(tmp) / "Programs" / "DockerDesktop" / "resources" / "bin" / "docker.exe"
+            exe.parent.mkdir(parents=True)
+            exe.write_text("")
+            with patch.object(bench.shutil, "which", return_value=None), \
+                    patch.dict(os.environ, {"LOCALAPPDATA": tmp}, clear=False):
+                self.assertEqual(bench.find_docker(), str(exe))
+
+    def test_none_when_nowhere(self):
+        import os
+        with patch.object(bench.shutil, "which", return_value=None), \
+                patch.dict(os.environ, {"LOCALAPPDATA": "/yok/boyle/klasor", "ProgramFiles": "/yok"}, clear=False):
+            self.assertIsNone(bench.find_docker())
+
+    def test_command_uses_found_path(self):
+        with patch.object(bench, "find_docker", return_value="C:/x/docker.exe"):
+            self.assertEqual(bench._docker_command(bench.Path("/tmp/x"), "n")[0], "C:/x/docker.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,9 @@
   "statik ve dinamik sonuç yan yana" tablosu.
 - 12 yeni test (yerel mod, zaman aşımı, özet, Docker durumu, arayüz akışları).
 
+- `benchmark.find_docker()`: `docker` PATH'te yoksa Docker Desktop'ın bilinen kurulum klasörlerinde arar
+  (Windows'ta kurulumdan önce açılmış pencerelerde PATH güncel olmaz).
+
 ### Changed
 - `benchmark.py` hata mesajları ve runner çıktıları Türkçeleştirildi; `runner.py` çalışma klasörünü argümandan alır.
 - Başlıktaki Docker göstergesi artık yalnızca komutun varlığına değil servisin çalışmasına bakar.
