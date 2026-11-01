@@ -19,6 +19,7 @@ from quality_studio.compare import evaluate_dataset, load_dataset
 from quality_studio.diffview import render_side_by_side
 from quality_studio.engine import analyze
 from quality_studio.evaluation import evaluate
+from quality_studio import llm
 from quality_studio.impact import impact, patch_effects
 from quality_studio.models import CATEGORY_TR, CONFIDENCE_TR, SEVERITY_TR
 from quality_studio.project_scan import analyzed, project_summary, scan_archive
@@ -73,7 +74,11 @@ def _header() -> None:
         dynamic_col.warning("**Dinamik katman:** Docker kurulu ama çalışmıyor. Docker Desktop'ı açın.")
     else:
         dynamic_col.warning("**Dinamik katman:** Docker bulunamadı. Yerel yedek mod kullanılabilir.")
-    llm_col.info("**LLM katmanı:** henüz bağlı değil (planlanan adım).")
+    settings = _llm_settings()
+    if settings.resolved_key():
+        llm_col.success(f"**LLM katmanı:** anahtar hazır ({settings.provider} · {settings.resolved_model()}).")
+    else:
+        llm_col.info("**LLM katmanı:** API anahtarı girilmedi. LLM Açıklama sekmesinden girebilirsiniz.")
 
 
 def _read_upload(upload, limit: int = MAX_SOURCE_BYTES) -> str | None:
@@ -112,6 +117,9 @@ def _finding_details(f: dict) -> None:
     st.write("**Nasıl düzelir?**", f["fix"])
     if f.get("corroborated_by"):
         st.caption("Şunlarla doğrulandı: " + ", ".join(f["corroborated_by"]))
+    note = (st.session_state.get("llm_explain") or {}).get("data", {}).get(f"{f['rule']}:{f['line']}")
+    if note:
+        st.info(f"**LLM açıklaması (bu koda özgü)**\n\n{note['neden']}\n\n**Öneri:** {note['duzeltme']}")
 
 
 def _code_viewer(code: str, findings: list[dict]) -> None:
@@ -529,14 +537,184 @@ def _dynamic_tab() -> None:
         _benchmark_result(st.session_state["bench_result"], *pair)
 
 
-def _llm_tab() -> None:
-    st.subheader("LLM Açıklama katmanı")
-    st.info("Bu katman henüz bağlı değil. Planlanan çalışma şekli aşağıda özetlenmiştir.")
+def _llm_settings() -> llm.Settings:
+    ss = st.session_state
+    return llm.Settings(provider=ss.get("llm_provider", "Google Gemini"), model=ss.get("llm_model_name", ""),
+                        api_key=ss.get("llm_key", ""))
+
+
+def _llm_intro() -> None:
+    st.subheader("LLM Açıklama katmanı: yapay zekâ ile anlama")
     st.markdown(
-        "- **Görevi:** bulguları kısa Türkçe ile açıklamak ve statik analizin kaçırdığı adayları önermek.\n"
-        "- **Güvence:** LLM'in söylediği her şey AST ile çapraz doğrulanır; doğrulanamayan öneri "
-        "\"doğrulanmadı\" etiketiyle gösterilir.\n"
-        "- **Gizlilik:** API anahtarı koda gömülmez, ortam değişkeninden okunur.")
+        "Statik analiz kuralları bilir ama **kodun ne yapmaya çalıştığını anlamaz**. LLM katmanı üç iş yapar:\n\n"
+        "1. **Bulguları bu koda özgü açıklar** (kısa Türkçe, neden + nasıl düzelir).\n"
+        "2. **Kuralların kaçırdığı adayları önerir.**\n"
+        "3. **Düzeltilmiş kod önerir.**")
+    with st.expander("Güvence zinciri: LLM'e neden körü körüne güvenmiyoruz?", expanded=True):
+        st.markdown(
+            "LLM hata yapabilir ve uydurabilir. Bu yüzden **söylediği her şey doğrulanır**:\n\n"
+            "- **Açıklama:** yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için kabul edilir; uydurmalar atılır.\n"
+            "- **Aday:** satır ve alıntı gerçek koda uymalı. AST bulgusuyla örtüşüyorsa *AST ile örtüşüyor*, "
+            "örtüşmüyorsa *doğrulanmadı (öneri)* etiketi alır.\n"
+            "- **Düzeltme:** geçerli Python olmalı, adlar korunmalı, bulgular azalmalı, yeni bulgu doğmamalı (**statik doğrulama**). "
+            "Çıktı eşitliği ve hız ise **Dinamik Analiz** sekmesinde ölçülür.\n\n"
+            "Zincir: **LLM önerir → AST doğrular → Docker ölçer.**")
+
+
+def _llm_connection() -> tuple[llm.Settings, bool]:
+    with st.expander("Bağlantı ayarları", expanded=not _llm_settings().resolved_key()):
+        names = list(llm.PROVIDERS)
+        st.selectbox("Sağlayıcı", names, key="llm_provider")
+        st.text_input("API anahtarı (yalnızca bu oturumda bellekte tutulur, dosyaya yazılmaz)", type="password",
+                      key="llm_key")
+        st.text_input("Model adı (boşsa varsayılan)", key="llm_model_name",
+                      help="Model adları sık değişir. Çalışmazsa 'Modelleri listele' ile geçerli bir ad seçin.")
+        if st.button("Modelleri listele", key="llm_list_btn"):
+            try:
+                st.session_state["llm_models"] = llm.list_models(_llm_settings())
+            except llm.LLMError as exc:
+                st.error(str(exc))
+        models = st.session_state.get("llm_models")
+        if models:
+            st.caption("Anahtarınızın kullanabildiği modeller (birini yukarıdaki kutuya yazın):")
+            st.code(", ".join(models), language=None)
+    live = st.toggle("Canlı çağrı yap (kapalıysa önce kayıtlı yanıt kullanılır)", value=True, key="llm_live")
+    st.caption("Ücretsiz katmanda gönderilen kod Google tarafından ürün geliştirmede kullanılabilir. "
+               "Gizli ya da özel kod göndermeyin; örnek veya kendi proje kodunuzla kullanın.")
+    st.caption("**Kota:** ücretsiz katmanda model başına yaklaşık dakikada 5, günde 20 istek vardır. Her düğme 1 istektir. "
+               "Sunumdan önce her düğmeyi bir kez çalıştırın; aynı kodla tekrar çağrıda 'Canlı çağrı' kapalıysa "
+               "kayıtlı yanıt kullanılır ve kota harcanmaz.")
+    return _llm_settings(), live
+
+
+def _llm_badge(outcome: dict) -> None:
+    if outcome["source"] == "canlı":
+        st.caption(f"Canlı yanıt · model: {outcome['model']}")
+        if outcome.get("requested") and outcome["requested"] != outcome["model"]:
+            st.info(f"Seçilen model ({outcome['requested']}) yoğundu; yedek model kullanıldı: {outcome['model']}.")
+    else:
+        st.warning(f"Kayıtlı yanıt gösteriliyor (canlı çağrı yapılmadı). Model: {outcome['model']}")
+
+
+def _llm_run(name: str, func, code: str, findings: list[dict], settings: llm.Settings, live: bool) -> None:
+    try:
+        with st.spinner("LLM çalışıyor..."):
+            outcome = func(code, findings, settings, live=live)
+    except llm.LLMError as exc:
+        st.error(str(exc))
+        return
+    st.session_state[name] = {"data": outcome.data, "source": outcome.source, "model": outcome.model, "code": code,
+                              "requested": settings.resolved_model()}
+
+
+def _llm_fresh(name: str, code: str) -> dict | None:
+    stored = st.session_state.get(name)
+    if not stored:
+        return None
+    if stored["code"] != code:
+        st.warning("Kod değişti; bu sonuç eski kod içindi. Yeniden çalıştırın.")
+        return None
+    return stored
+
+
+def _llm_explain_section(code: str, findings: list[dict], settings, live: bool) -> None:
+    st.markdown("#### 1) Bulguları açıkla")
+    if st.button("Bulguları LLM ile açıkla", key="llm_explain_btn"):
+        _llm_run("llm_explain", llm.explain_findings, code, findings, settings, live)
+    stored = _llm_fresh("llm_explain", code)
+    if not stored:
+        return
+    _llm_badge(stored)
+    notes = stored["data"]["aciklamalar"]
+    for f in findings:
+        note = notes.get(f"{f['rule']}:{f['line']}")
+        if note:
+            st.markdown(f"**{f['rule']} · satır {f['line']} · {f['message']}**")
+            st.write(f"Neden: {note['neden']}")
+            st.write(f"Düzeltme: {note['duzeltme']}")
+    if stored["data"]["reddedilen"]:
+        st.caption(f"Doğrulamadan geçemeyen {stored['data']['reddedilen']} kayıt atıldı (modelin uydurduğu satır/kural).")
+    st.caption("Bu açıklamalar **Kod İnceleme** sekmesindeki bulgu kartlarında da görünür.")
+
+
+STATUS_TR = {"ast_overlap": "AST ile örtüşüyor", "unverified": "Doğrulanmadı (öneri)"}
+
+
+def _llm_candidates_section(code: str, findings: list[dict], settings, live: bool) -> None:
+    st.markdown("#### 2) Kuralların kaçırdığı adaylar")
+    if st.button("Aday sorunları öner", key="llm_cand_btn"):
+        _llm_run("llm_cand", llm.suggest_candidates, code, findings, settings, live)
+    stored = _llm_fresh("llm_cand", code)
+    if not stored:
+        return
+    _llm_badge(stored)
+    rows = stored["data"]["adaylar"]
+    if not rows:
+        st.success("LLM yeni bir aday öneremedi (ya da önerdikleri doğrulamadan geçmedi).")
+    else:
+        st.dataframe([{"Satır": r["line"], "Kategori": _category_tr(r["category"]), "Başlık": r["title"],
+                       "Neden": r["why"], "Öneri": r["fix"], "Durum": STATUS_TR[r["status"]],
+                       "Örtüşen kural": ", ".join(r["ast_rules"])} for r in rows], hide_index=True)
+        st.caption("**Doğrulanmadı** etiketi: LLM'in görüşü; statik kurallar bunu teyit edemedi. Kesin bulgu sayılmaz.")
+    if stored["data"]["reddedilen"]:
+        st.caption(f"{stored['data']['reddedilen']} aday atıldı: satır numarası veya alıntı gerçek koda uymuyordu.")
+
+
+def _send_fix_to_dynamic(before: str, after: str) -> None:
+    st.session_state["dyn_before"] = before
+    st.session_state["dyn_after"] = after
+
+
+def _llm_fix_section(code: str, findings: list[dict], settings, live: bool) -> None:
+    st.markdown("#### 3) Düzeltme öner ve doğrula")
+    if st.button("LLM ile düzeltme öner", key="llm_fix_btn"):
+        _llm_run("llm_fix", llm.propose_fix, code, findings, settings, live)
+    stored = _llm_fresh("llm_fix", code)
+    if not stored:
+        return
+    _llm_badge(stored)
+    data = stored["data"]
+    check = data["dogrulama"]
+    if check["verified"]:
+        st.success("Statik doğrulama geçti. Çıktı eşitliği ve hız için sıradaki adım: Dinamik Analiz.")
+    else:
+        st.error("Statik doğrulama başarısız: bu öneriye güvenmeyin.")
+    st.table(pd.DataFrame([{"Kontrol": c["kontrol"], "Sonuç": "Geçti" if c["gecti"] else "Kaldı", "Ayrıntı": c["ayrinti"]}
+                           for c in check["checks"]]).set_index("Kontrol"))
+    if check["effect"]:
+        st.caption(f"Sezgisel skor: {check['effect']['score_before']} → {check['effect']['score_after']} "
+                   f"(bulgu: {check['effect']['findings_before']} → {check['effect']['findings_after']})")
+    if data["degisiklikler"]:
+        st.markdown("**LLM'in anlattığı değişiklikler:** " + "; ".join(data["degisiklikler"]))
+    st.code(data["kod"], language="python")
+    st.button("Önce/Sonra sürümlerini Dinamik Analiz sekmesine gönder", key="llm_to_dynamic",
+              on_click=_send_fix_to_dynamic, args=(code, data["kod"]))
+
+
+def _llm_tab() -> None:
+    _llm_intro()
+    settings, live = _llm_connection()
+    if not settings.resolved_key():
+        st.info("Başlamak için API anahtarınızı yukarıdaki **Bağlantı ayarları** bölümüne yapıştırın.")
+        return
+    consent = st.checkbox("Bu kodun seçili sağlayıcıya gönderileceğini anlıyorum", key="llm_consent")
+    code = _current_code()
+    try:
+        result = analyze(code)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    if not result.valid:
+        st.error("Geçersiz Python sözdizimi; önce Kod İnceleme sekmesinde düzeltin.")
+        return
+    st.caption(f"Gönderilecek kod: **Kod İnceleme** sekmesindeki editör ({len(code.splitlines())} satır, "
+               f"{len(result.findings)} statik bulgu).")
+    if not consent:
+        st.warning("LLM çağrıları için yukarıdaki onay kutusunu işaretleyin (kayıtlı yanıtlar da bu onayı ister).")
+        return
+    _llm_explain_section(code, result.issues, settings, live)
+    _llm_candidates_section(code, result.issues, settings, live)
+    _llm_fix_section(code, result.issues, settings, live)
 
 
 def _project_tab() -> None:

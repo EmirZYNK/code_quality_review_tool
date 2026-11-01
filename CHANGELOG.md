@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Adım 5: LLM katmanı
+
+### Added
+- `quality_studio/llm.py`: sağlayıcıdan bağımsız LLM katmanı (Google Gemini ana seçenek; Groq ve OpenRouter ayardan seçilir).
+  Üç görev: bulgu açıklaması, kaçırılan aday önerisi, düzeltme önerisi. Hepsi Türkçe ve kısa.
+- Doğrulama zinciri: açıklamalar yalnızca gerçek (kural, satır) çiftleri için kabul edilir; adaylar satır + alıntı ile
+  koda karşı kontrol edilir ve "AST ile örtüşüyor" / "doğrulanmadı" etiketi alır; düzeltmeler statik olarak doğrulanır
+  (geçerli Python, adlar korundu, bulgu azaldı, yeni bulgu yok). Hız ve çıktı eşitliği Dinamik Analiz'de ölçülür.
+- Kayıtlı yanıt önbelleği (`.llm_cache/`): internet kesilirse ya da kota dolarsa son başarılı yanıt "kayıtlı yanıt" etiketiyle gösterilir.
+- "Modelleri listele": anahtarın kullanabildiği modelleri sağlayıcıdan sorar (model adları sık değiştiği için sabit yazılmadı).
+- LLM sekmesinden "Dinamik Analiz'e gönder" düğmesi; LLM açıklamaları Kod İnceleme bulgu kartlarında da görünür.
+- 17 yeni test (sahte ağ katmanıyla; gerçek sağlayıcı çağrısı testlerde yapılmaz).
+
+- Sağlayıcı yoğunken (5xx) otomatik yeniden deneme (2 sn, 4 sn) ve yedek modellere geçiş (`gemini-2.5-flash`, `gemini-2.5-flash-lite`); gerçekte kullanılan model ekranda yazılır.
+
+### Security
+- API anahtarı yalnızca bellekte tutulur; URL'ye, istek gövdesine, önbelleğe ve `repr`'e girmez (HTTP başlığında gönderilir).
+- Kod modele "veri" olarak verilir; modelin çıktısı her durumda doğrulanır. Gönderim için açık onay kutusu vardır.
+
 ## Unreleased — Adım 4: Dinamik Analiz sekmesi
 
 ### Added

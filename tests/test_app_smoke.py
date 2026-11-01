@@ -160,6 +160,29 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(any("Dinamik (çalıştırma)" in t for t in tables))
         self.assertEqual(fake.logged("error"), [])
 
+    def test_llm_tab_without_key_asks_for_key(self):
+        fake = FakeStreamlit()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            _run_app(fake)
+        infos = " ".join(str(a) for a in fake.logged("info"))
+        self.assertIn("API anahtar", infos)
+        self.assertEqual(fake.logged("error"), [])
+
+    def test_llm_tab_explain_and_fix_flow_with_mocked_provider(self):
+        from quality_studio import llm
+        fake = FakeStreamlit(pressed={"Bulguları LLM ile açıkla", "LLM ile düzeltme öner"}, checked=True)
+        fake.session_state["llm_key"] = "test-anahtari"
+        explain = llm.Outcome({"aciklamalar": {}, "reddedilen": 0}, "kayıtlı", "m")
+        fix_data = {"kod": "x = 1\n", "degisiklikler": ["a"],
+                    "dogrulama": {"verified": False, "effect": None,
+                                  "checks": [{"kontrol": "Bulgular azaldı", "gecti": False, "ayrinti": "yok"}]}}
+        with mock.patch("quality_studio.llm.explain_findings", return_value=explain), \
+                mock.patch("quality_studio.llm.propose_fix", return_value=llm.Outcome(fix_data, "canlı", "m")):
+            _run_app(fake)
+        self.assertEqual(fake.logged("error")[:1] and [e for e in fake.logged("error") if "Statik doğrulama" not in str(e)], [])
+        self.assertEqual(fake.session_state["llm_fix"]["source"], "canlı")
+        self.assertEqual(fake.session_state["llm_explain"]["source"], "kayıtlı")
+
 
 if __name__ == "__main__":
     unittest.main()
