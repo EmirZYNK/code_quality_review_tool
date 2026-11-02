@@ -721,6 +721,19 @@ def _hybrid_card(card: dict) -> None:
         _badge_lines(card["badges"])
 
 
+def _llm_code_view(code: str, findings: list[dict], cards: list[dict], review: dict) -> None:
+    """Kodun üstünde LLM'in kararları: onay, eleme (gri), bağlama bağlı ve kaçırılan sorunlar satırın altında."""
+    st.markdown("##### Kodun üstünde LLM kararları")
+    notes = hybrid.code_annotations(cards, review["data"].get("ek_sorunlar"))
+    if not notes:
+        st.caption("LLM'den koda iliştirilecek bir not gelmedi.")
+        return
+    st.caption("Her bulgunun altında LLM'in kararı ve koda özel açıklaması görünür. Elenen satır gri ve soluk gösterilir "
+               "(silinmez). Mor notlar AST'nin kaçırdığı, doğrulanmamış LLM önerileridir.")
+    height = min(900, max(260, 110 + len(code.splitlines()) * 23 + len(notes) * 62))
+    components.html(render_code(code, findings, annotations=notes), height=height, scrolling=True)
+
+
 def _hybrid_cards(cards: list[dict]) -> None:
     if not cards:
         st.success("Açık kurallardan bulgu çıkmadı. Bu, kodun güvenli veya doğru olduğunu garanti etmez.")
@@ -752,6 +765,9 @@ def _verdict_overview(cards: list[dict], result) -> None:
     cols[2].metric("Bağlama bağlı", summary["baglama_bagli"])
     cols[3].metric("LLM eledi", summary["yanlis_pozitif"])
     cols[4].metric("Karar gelmedi", summary["karar_yok"])
+    if summary["gonderilmedi"]:
+        st.caption(f"{summary['gonderilmedi']} bulgu LLM'e gönderilmedi (YZ göstergeleri ya da çağrı başına "
+                   f"{llm.MAX_FINDINGS_PER_CALL} bulgu sınırı); bunlar 'Karar gelmedi' sayısına girmez.")
     st.caption(f"Sezgisel skor: AST sonucu **{summary['skor_ast']}** · LLM elemesinden sonra **{summary['skor_llm_sonrasi']}**. "
                "Eleme LLM görüşüdür; AST skoru ve bulgular değiştirilmez. 'Karar gelmedi': YZ göstergeleri LLM'e "
                "gönderilmez, ayrıca modelin yanıtlamadığı ya da gerekçesiz bulduğumuz kararlar.")
@@ -1147,6 +1163,7 @@ def _hybrid_tab() -> None:
                                llm_ran=review is not None)
     if review:
         _verdict_overview(cards, result)
+        _llm_code_view(snapshot, findings, cards, review)
     _hybrid_cards(cards)
     if review:
         _hybrid_extra_issues(review)

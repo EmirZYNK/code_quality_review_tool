@@ -398,7 +398,7 @@ class VerdictReviewTests(Isolated):
         self.assertEqual(len(data["ek_sorunlar"]), hybrid.MAX_EXTRA_ISSUES)
 
     def test_unchanged_code_is_not_presented_as_a_failed_fix(self):
-        data = self._review([self._record(karar="yanlis_pozitif", gerekce="Bu kodda sorun yok.", neden="", duzeltme="")],
+        data = self._review([self._record(karar="yanlis_pozitif", gerekce="Bu kodda eval yalnızca sabit bir metne uygulanıyor.", neden="", duzeltme="")],
                             kod=BEFORE)
         self.assertIsNone(data["kod"])
         self.assertTrue(data["degisiklik_yok"])

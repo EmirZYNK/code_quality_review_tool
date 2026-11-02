@@ -31,7 +31,9 @@ HYBRID_TASK = "hybrid"
 # LLM'in her AST bulgusu için verebileceği kararlar. Elenen (yanlış pozitif) bulgu silinmez; gerekçesiyle gösterilir.
 VERDICTS = ("onayla", "yanlis_pozitif", "baglama_bagli")
 VERDICT_TR = {"onayla": "Onaylandı", "yanlis_pozitif": "Elendi (yanlış pozitif)", "baglama_bagli": "Bağlama bağlı"}
-MIN_REASON_CHARS = 5   # gerekçesiz karar kabul edilmez
+MIN_REASON_CHARS = 5   # "bağlama bağlı" için en az gerekçe uzunluğu (gerekçesiz karar kabul edilmez)
+MIN_ELIMINATION_CHARS = 25         # bir bulguyu elemek için en az gerekçe uzunluğu
+MIN_RISKY_ELIMINATION_CHARS = 60   # kritik/yüksek önemli bulguyu elemek için en az gerekçe uzunluğu
 MAX_EXTRA_ISSUES = 5   # AST'nin kaçırdığı, LLM'in eklediği anlamsal sorunların üst sınırı
 RISKY_SEVERITIES = ("critical", "high")  # bu önemdeki bir bulgu elenirse arayüz ayrıca uyarır
 
@@ -201,7 +203,8 @@ def _prompt(code: str, items: list[dict]) -> str:
         "1) DOĞRULA ya da ELE: her bulgu için bu kod bağlamında karar ver. 'karar' şunlardan biri olmalı: "
         "'onayla' (bu kodda gerçek bir sorun), 'yanlis_pozitif' (kural tetiklendi ama bu kodda sorun değil), "
         "'baglama_bagli' (girdiye ya da çalışma ortamına bağlı; neye bağlı olduğunu söyle). "
-        "'gerekce': kararın nedeni, koda özgü 1-2 cümle (zorunlu). 'neden': sorun neden önemli (1-2 cümle). "
+        "'gerekce': kararın nedeni, koda özgü 1-2 cümle (zorunlu; 'yanlis_pozitif' için en az 25 karakter, kritik/yüksek "
+        "önemli bulgu için en az 60 karakter ve koddan somut bir ifadeye dayanmalı, kısa gerekçeli eleme atılır). 'neden': sorun neden önemli (1-2 cümle). "
         "'duzeltme': bu kodda nasıl düzelir (1-2 cümle; yanlis_pozitif için boş bırakabilirsin). "
         "Emin değilsen 'onayla' ya da 'baglama_bagli' de; özellikle güvenlik bulgularını yalnızca açık bir "
         "gerekçen varsa ele (ör. eval yalnızca sabit bir metne uygulanıyorsa).\n"
@@ -247,8 +250,9 @@ def _clean_review(record: dict) -> tuple[dict | None, bool]:
     """
     raw_verdict, reason = record.get("karar"), _text(record.get("gerekce"))
     verdict = raw_verdict if raw_verdict in VERDICTS else None
-    if verdict in ("yanlis_pozitif", "baglama_bagli") and (reason is None or len(reason) < MIN_REASON_CHARS):
-        verdict = None  # gerekçesiz eleme/koşul kabul edilmez: sessizce bir bulguyu yok saymak istemiyoruz
+    needed = MIN_ELIMINATION_CHARS if verdict == "yanlis_pozitif" else MIN_REASON_CHARS
+    if verdict in ("yanlis_pozitif", "baglama_bagli") and (reason is None or len(reason) < needed):
+        verdict = None  # yetersiz gerekçeli eleme/koşul kabul edilmez: sessizce bir bulguyu yok saymak istemiyoruz
     dropped = raw_verdict is not None and verdict is None
     reason_text, fix_text = _text(record.get("neden")), _text(record.get("duzeltme"))
     if verdict is not None:
@@ -259,7 +263,7 @@ def _clean_review(record: dict) -> tuple[dict | None, bool]:
     return None, dropped
 
 
-def _clean_explanations(records, valid: set) -> tuple[dict, int, int]:
+def _clean_explanations(records, valid: set, severities: dict | None = None) -> tuple[dict, int, int]:
     """Yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için açıklama/karar kabul edilir.
 
     (kayıtlar, atılan kayıt sayısı, atılan karar sayısı) döndürür.
@@ -272,6 +276,14 @@ def _clean_explanations(records, valid: set) -> tuple[dict, int, int]:
         if cleaned is None:
             rejected += 1
             continue
+        if (cleaned["karar"] == "yanlis_pozitif" and (severities or {}).get(pair) in RISKY_SEVERITIES
+                and len(cleaned["gerekce"]) < MIN_RISKY_ELIMINATION_CHARS):
+            # kritik/yüksek önemli bulguyu kısa bir cümleyle eleyemezsin: karar atılır, açıklama (varsa) kalır
+            dropped_verdicts += 1
+            if not (cleaned["neden"] and cleaned["duzeltme"] is not None):
+                rejected += 1
+                continue
+            cleaned = {**cleaned, "karar": None, "gerekce": ""}
         out[f"{pair[0]}:{pair[1]}"] = cleaned
     return out, rejected, dropped_verdicts
 
@@ -302,12 +314,13 @@ def review_and_fix(code: str, findings: list[dict], settings: llm.Settings, *, l
     if not chosen:
         raise llm.LLMError("Düzeltilecek bulgu yok.")
     user = _prompt(code, _rule_guidance(chosen))
-    valid = {(f["rule"], f["line"]) for f in chosen}
+    severities = {(f["rule"], f["line"]): f["severity"] for f in chosen}
+    valid = set(severities)
 
     def validate(raw) -> dict:
         if not isinstance(raw, dict):
             raise llm.LLMError("Model beklenen JSON nesnesini döndürmedi.")
-        notes, rejected, dropped_verdicts = _clean_explanations(raw.get("aciklamalar"), valid)
+        notes, rejected, dropped_verdicts = _clean_explanations(raw.get("aciklamalar"), valid, severities)
         extras, rejected_extras = llm.clean_candidates(raw.get("ek_sorunlar"), code, findings, relocate=True)
         fix = _clean_fix(raw, code, config)
         unchanged = fix["kod"] is not None and fix["kod"].strip() == code.strip()
@@ -730,6 +743,15 @@ def verdict_summary(cards: list[dict], nonblank_lines: int) -> dict:
     Skor, `metrics.quality_score` ile aynı formülle hesaplanır (tek doğruluk kaynağı).
     """
     counts = Counter(c["verdict"] or "karar_yok" for c in cards)
+    unsent, reviewed = 0, 0
+    for card in cards:  # LLM'e hiç gönderilmeyenler: YZ göstergeleri ve çağrı başına üst sınırı aşan bulgular
+        if card["finding"]["category"] == "AI Pattern":
+            sent = False
+        else:
+            reviewed += 1
+            sent = reviewed <= llm.MAX_FINDINGS_PER_CALL
+        if not sent and card["verdict"] is None and not card["note"]:
+            unsent += 1
 
     def score(findings: list[dict]) -> int:
         objects = [Finding(**{**f, "corroborated_by": tuple(f.get("corroborated_by", ()))}) for f in findings]
@@ -737,10 +759,37 @@ def verdict_summary(cards: list[dict], nonblank_lines: int) -> dict:
 
     return {
         "toplam": len(cards), "onayla": counts["onayla"], "yanlis_pozitif": counts["yanlis_pozitif"],
-        "baglama_bagli": counts["baglama_bagli"], "karar_yok": counts["karar_yok"],
+        "baglama_bagli": counts["baglama_bagli"], "karar_yok": counts["karar_yok"] - unsent, "gonderilmedi": unsent,
         "riskli_eleme": sum(c["risky_elimination"] for c in cards),
         "skor_ast": score([c["finding"] for c in cards]), "skor_llm_sonrasi": score(active_findings(cards)),
     }
+
+
+def code_annotations(cards: list[dict], extras: list[dict] | None = None) -> list[dict]:
+    """LLM'in kod satırlarına iliştirilecek notları: {line, kind, label, text}. kind: onay | eledi | baglam | aciklama | ek."""
+    notes: list[dict] = []
+    for card in cards:
+        note, finding = card["note"], card["finding"]
+        if not note:
+            continue
+        head = f"{finding['rule']}: "
+        explain = note.get("neden", "")
+        advice = f" Öneri: {note['duzeltme']}" if note.get("duzeltme") else ""
+        verdict = card["verdict"]
+        if verdict == "yanlis_pozitif":
+            kind, label, text = "eledi", "⊘ LLM eledi (yanlış pozitif)", note.get("gerekce", "")
+        elif verdict == "baglama_bagli":
+            kind, label, text = "baglam", "! Bağlama bağlı", f"{note.get('gerekce', '')} {explain}{advice}".strip()
+        elif verdict == "onayla":
+            kind, label, text = "onay", "✓ LLM onayladı", f"{explain}{advice}".strip() or note.get("gerekce", "")
+        else:
+            kind, label, text = "aciklama", "LLM açıklaması", f"{explain}{advice}".strip()
+        notes.append({"line": finding["line"], "kind": kind, "label": head + label, "text": text})
+    for extra in extras or []:
+        overlap = "AST ile örtüşüyor" if extra.get("status") == "ast_overlap" else "doğrulanmadı"
+        notes.append({"line": extra["line"], "kind": "ek", "label": f"? LLM'in eklediği sorun ({overlap})",
+                      "text": f"{extra.get('title', '')}: {extra.get('why', '')} Öneri: {extra.get('fix', '')}".strip()})
+    return notes
 
 
 def after_findings_of(after: str, config: Config | None = None) -> list[dict] | None:

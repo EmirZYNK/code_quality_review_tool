@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — Adım 2 kapanışı: LLM kararı kodun üstünde, sıkı eleme gerekçesi
+
+### Added
+- **Kodun üstünde LLM kararları:** Hibrit sekmede LLM çalıştıktan sonra işaretli kod, her bulgu satırının altında LLM'in kararını ve koda özel
+  açıklamasını gösterir (yeşil onay, turuncu bağlama bağlı, mavi açıklama). Elenen satır gri ve soluk görünür, silinmez.
+  AST'nin kaçırdığı sorunlar mor, "doğrulanmadı" etiketli notlar olarak ilgili satırın altına eklenir (`hybrid.code_annotations`, `codeview.render_code(annotations=...)`).
+- `verdict_summary`: yeni `gonderilmedi` alanı (YZ göstergeleri ve çağrı başına 12 bulgu sınırını aşanlar).
+
+### Changed
+- **Eleme gerekçesi eşiği:** `yanlis_pozitif` için en az 25 karakter; kritik/yüksek önemli bulgu için en az 60 karakter. Kısa gerekçeli eleme atılır,
+  bulgu aktif kalır (düzeltmeye girer). İstem de bunu LLM'e söyler.
+- "Karar gelmedi" sayacı artık yalnızca LLM'e gönderilip yanıt gelmeyen ya da atılan kararları sayar; gönderilmeyenler ayrı yazılır.
+- `render_code` iki küçük işleve bölündü (proje kendi karmaşıklık kuralından geçsin diye).
+- Testler: 10 yeni test (`tests/test_step2_close.py`), toplam 239.
+
 ## Unreleased — Adım 3 ve 4: sıfır toleranslı doğrulama, çok fonksiyonlu ve tam davranışlı dinamik analiz
 
 ### Changed
