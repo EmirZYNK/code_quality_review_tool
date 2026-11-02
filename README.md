@@ -4,7 +4,8 @@ Python kaynak kodunu **çalıştırmadan** (yalnızca AST ile) analiz eden araç
 güvenilirlik, tekrar eden kod ve "yapay zekâ üretimi göstergeleri". Önce/sonra etki analizi, muhafazakâr yama önerileri,
 ZIP/dizin taraması, istatistiksel veri seti karşılaştırması ve kural bazlı precision/recall ölçümü içerir.
 
-> **Şu an hiçbir API anahtarı veya dış servis kullanılmıyor.** LLM katmanı kasıtlı olarak kaldırıldı.
+> LLM katmanı **isteğe bağlıdır**: API anahtarı girilmezse araç yalnızca statik/dinamik katmanlarla çalışır.
+> Anahtar koda ya da dosyaya yazılmaz, yalnızca oturumda bellekte tutulur.
 > Skor ve AI göstergeleri sezgiseldir; doğruluk, güvenlik veya yazarlık kanıtı değildir.
 
 ## Kurulum ve çalıştırma
@@ -16,8 +17,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Arayüz sekmeleri: **Code Review** (bulgular, satır görünümü, yamalar, etki analizi, isteğe bağlı Docker benchmark),
-**Project (ZIP)**, **Dataset Comparison**, **Rule Evaluation**.
+Arayüz tamamen Türkçedir. Sekmeler:
+
+| Sekme | Ne gösterir |
+|---|---|
+| **Kod İnceleme** | bulgular, satır görünümü, yamalar, önce/sonra etki analizi |
+| **Statik Analiz** | AST ağacı, hangi kuralın hangi düğümde tetiklendiği, kategori dağılımı, 36 kurallık katalog |
+| **Dinamik Analiz** | önce/sonra kodunu Docker'da izole çalıştırıp süre, bellek ve çıktıyı karşılaştırır |
+| **LLM Açıklama** | bulguları bu koda özgü Türkçe açıklar, kaçırılan adayları önerir, düzeltme önerir; her çıktı AST ile doğrulanır |
+| **İnsan vs YZ** | etiketli veri setinde istatistiksel karşılaştırma |
+| **Proje (ZIP)** | ZIP olarak yüklenen projenin statik taraması |
+| **Kural Değerlendirmesi** | kural bazında precision/recall ölçümü |
 
 ## Komut satırı
 

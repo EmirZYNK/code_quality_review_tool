@@ -55,7 +55,7 @@ def parse_ruff(payload: str) -> list[Finding]:
         end = (item.get("end_location") or item["location"])["row"]
         findings.append(Finding(
             rule=f"RUFF:{code}", category=category, severity=severity, line=line, end_line=max(line, end),
-            message=item.get("message", code), why="Reported by ruff.", fix="See the ruff rule documentation.",
+            message=item.get("message", code), why="ruff tarafından bildirildi.", fix="ruff kural belgelerine bakın.",
             source="ruff", confidence="medium"))
     return findings
 
@@ -69,8 +69,8 @@ def parse_bandit(payload: str) -> list[Finding]:
         findings.append(Finding(
             rule=f"BANDIT:{item.get('test_id', 'B000')}", category="Security",
             severity=_BANDIT_SEVERITY.get(str(item.get("issue_severity", "LOW")).upper(), "low"),
-            line=line, end_line=line, message=item.get("issue_text", "Bandit finding"),
-            why="Reported by bandit.", fix="See the bandit test documentation.", source="bandit",
+            line=line, end_line=line, message=item.get("issue_text", "Bandit bulgusu"),
+            why="bandit tarafından bildirildi.", fix="bandit test belgelerine bakın.", source="bandit",
             confidence=str(item.get("issue_confidence", "medium")).lower(),
             cwe=f"CWE-{cwe}" if cwe else None))
     return findings

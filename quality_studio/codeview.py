@@ -43,8 +43,8 @@ def render_code(code: str, issues=(), focus_line: int | None = None, max_lines: 
         style = f"background:{_background(index, focus_line, severity)};border-left:3px solid {COLORS.get(severity, 'transparent')}"
         rows.append(f'<div class="line" style="{style}" title="{tooltip}">'
                     f'<span class="num">{index}</span><span class="source">{escape(content)}</span></div>')
-    notice = f'<div class="notice">Preview limited to first {max_lines:,} lines.</div>' if truncated else ""
+    notice = f'<div class="notice">Önizleme ilk {max_lines:,} satırla sınırlı.</div>' if truncated else ""
     total = sum(len(v) for v in by_line.values())
     return (f'<!doctype html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>'
-            f'<div class="toolbar">PYTHON · READ-ONLY REVIEW · {len(lines)} lines · {total} findings</div>'
+            f'<div class="toolbar">PYTHON · YALNIZCA OKUMA · {len(lines)} satır · {total} bulgu</div>'
             f'<div class="code">{"".join(rows)}</div>{notice}</body></html>')

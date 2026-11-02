@@ -70,7 +70,7 @@ def _line_chips(issues: list[dict], kinds: dict[int, str], line: int) -> str:
         if issue.get("line") != line:
             continue
         kind = kinds.get(index, "kept")
-        label = {"resolved": "✓ resolved", "new": "+ new", "kept": ""}[kind]
+        label = {"resolved": "✓ çözüldü", "new": "+ yeni", "kept": ""}[kind]
         text = f"{label} {issue.get('rule', '')}".strip()
         tip = escape(str(issue.get("message", "")), quote=True)
         chips.append(f'<span class="chip {kind}" title="{tip}">{escape(text)}</span>')
@@ -114,10 +114,10 @@ def render_side_by_side(before: str, after: str, before_issues=(), after_issues=
             f'<td class="num l">{left_no or ""}</td><td class="src l">{escape(left)}{left_chips}</td>'
             f'<td class="num r">{right_no or ""}</td><td class="src r">{escape(right)}{right_chips}</td></tr>')
     total = len(before_lines) + len(after_lines)
-    notice = (f'<div style="padding:10px;color:#fbbf24">Preview limited to {max_lines:,} rows.</div>'
+    notice = (f'<div style="padding:10px;color:#fbbf24">Önizleme {max_lines:,} satırla sınırlı.</div>'
               if total and shown >= max_lines else "")
-    toolbar = (f'<div class="toolbar"><span>BEFORE → AFTER</span>'
-               f'<span class="ok">{len(resolved)} resolved</span><span class="bad">{len(introduced)} new</span>'
-               f'<label><input type="checkbox" id="only"> only changed lines</label></div>')
+    toolbar = (f'<div class="toolbar"><span>ÖNCE → SONRA</span>'
+               f'<span class="ok">{len(resolved)} çözüldü</span><span class="bad">{len(introduced)} yeni</span>'
+               f'<label><input type="checkbox" id="only"> yalnızca değişen satırlar</label></div>')
     return (f'<!doctype html><html><head><meta charset="utf-8"><style>{_STYLE}</style></head><body>'
             f'{toolbar}<table>{"".join(rows)}</table>{notice}<script>{_SCRIPT}</script></body></html>')

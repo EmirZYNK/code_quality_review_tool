@@ -76,7 +76,7 @@ def to_text(entries: list[tuple[str, AnalysisResult]]) -> str:
         for finding in result.findings:
             lines.append(f"{path}:{finding.line}: {finding.rule} [{finding.severity}] {finding.message}")
     total = sum(len(r.findings) for _, r in entries)
-    lines.append(f"{total} finding(s) in {len(entries)} file(s).")
+    lines.append(f"{len(entries)} dosyada {total} bulgu.")
     return "\n".join(lines)
 
 
@@ -87,22 +87,22 @@ def _section(title: str, code: str, result: AnalysisResult) -> str:
         for f in result.findings
     )
     score = escape(str(result.metrics.get("score", "n/a")))
-    return (f"<section><h2>{escape(title)}</h2><p>Heuristic score: {score} | Findings: {len(result.findings)}</p>"
-            f"<pre>{escape(code)}</pre><table><thead><tr><th>Line</th><th>Rule</th><th>Severity</th>"
-            f"<th>Category</th><th>Issue</th><th>Suggestion</th></tr></thead><tbody>{rows}</tbody></table></section>")
+    return (f"<section><h2>{escape(title)}</h2><p>Sezgisel skor: {score} | Bulgu: {len(result.findings)}</p>"
+            f"<pre>{escape(code)}</pre><table><thead><tr><th>Satır</th><th>Kural</th><th>Önem</th>"
+            f"<th>Kategori</th><th>Sorun</th><th>Öneri</th></tr></thead><tbody>{rows}</tbody></table></section>")
 
 
 def to_html(before: tuple[str, AnalysisResult], after: tuple[str, AnalysisResult] | None = None) -> str:
     """Standalone, HTML-escaped report; pass `after` for a before/after view."""
-    body = _section("Before" if after else "Source", *before)
+    body = _section("Önce" if after else "Kaynak", *before)
     if after:
-        body += _section("After", *after)
+        body += _section("Sonra", *after)
     style = ("body{font:15px system-ui;max-width:1100px;margin:40px auto;padding:0 20px;background:#0d1117;color:#e6edf3}"
              "pre{overflow:auto;background:#161b22;padding:20px;border-radius:8px}"
              "table{border-collapse:collapse;width:100%;font-size:13px}"
              "th,td{border:1px solid #30363d;padding:9px;text-align:left}section{margin-bottom:36px}h1{color:#5eead4}")
-    return ("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width\"><title>Code Quality Report</title>"
-            f"<style>{style}</style></head><body><h1>Code Quality Review</h1>"
-            "<p>Static heuristics only. Submitted source was not executed. Scores do not prove correctness or security.</p>"
+    return ("<!doctype html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width\"><title>Kod Kalitesi Raporu</title>"
+            f"<style>{style}</style></head><body><h1>Kod Kalitesi İncelemesi</h1>"
+            "<p>Yalnızca statik sezgiler. Gönderilen kod çalıştırılmadı. Skorlar doğruluk veya güvenlik kanıtı değildir.</p>"
             f"{body}</body></html>")

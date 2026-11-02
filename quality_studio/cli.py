@@ -20,15 +20,15 @@ FORMATS = {"text": to_text, "json": to_json, "sarif": to_sarif}
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="quality-studio", description="Static Python quality analysis")
-    parser.add_argument("paths", type=Path, nargs="+", help="Python files, directories, or .zip archives")
+    parser = argparse.ArgumentParser(prog="quality-studio", description="Python için statik kod kalitesi analizi")
+    parser.add_argument("paths", type=Path, nargs="+", help="Python dosyaları, klasörler veya .zip arşivleri")
     parser.add_argument("--format", choices=sorted(FORMATS), default="text")
     parser.add_argument("--fail-on", choices=sorted(SEVERITY_ORDER, key=SEVERITY_ORDER.get), default="medium",
-                        help="lowest severity that makes the exit code non-zero (default: medium)")
-    parser.add_argument("--disable", default="", help="comma-separated rule ids to disable")
-    parser.add_argument("--config", type=Path, help="JSON file with threshold overrides")
-    parser.add_argument("--external", action="store_true", help="also use ruff/bandit when installed")
-    parser.add_argument("--output", type=Path, help="write the report to this file instead of stdout")
+                        help="çıkış kodunu sıfırdan farklı yapan en düşük önem (varsayılan: medium)")
+    parser.add_argument("--disable", default="", help="kapatılacak kural kimlikleri (virgülle ayrılmış)")
+    parser.add_argument("--config", type=Path, help="eşik değerlerini değiştiren JSON dosyası")
+    parser.add_argument("--external", action="store_true", help="kuruluysa ruff/bandit ile de çapraz doğrula")
+    parser.add_argument("--output", type=Path, help="raporu ekrana yazmak yerine bu dosyaya yaz")
     return parser
 
 
@@ -39,7 +39,7 @@ def _load_config(args: argparse.Namespace) -> Config:
     disabled = {r.strip().upper() for r in args.disable.split(",") if r.strip()}
     unknown = disabled - set(RULES)
     if unknown:
-        raise ValueError(f"Unknown rule ids: {', '.join(sorted(unknown))}")
+        raise ValueError(f"Bilinmeyen kural kimlikleri: {', '.join(sorted(unknown))}")
     return config.with_disabled(disabled)
 
 
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         config = _load_config(args)
         entries = [item for path in args.paths for item in _collect(path, config, args.external)]
     except (OSError, ValueError, UnicodeDecodeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"hata: {exc}", file=sys.stderr)
         return 2
     report = FORMATS[args.format](entries)
     if args.output:

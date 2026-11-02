@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — Adım 5: LLM katmanı
+
+### Added
+- `quality_studio/llm.py`: sağlayıcıdan bağımsız LLM katmanı (Google Gemini ana seçenek; Groq ve OpenRouter ayardan seçilir).
+  Üç görev: bulgu açıklaması, kaçırılan aday önerisi, düzeltme önerisi. Hepsi Türkçe ve kısa.
+- Doğrulama zinciri: açıklamalar yalnızca gerçek (kural, satır) çiftleri için kabul edilir; adaylar satır + alıntı ile
+  koda karşı kontrol edilir ve "AST ile örtüşüyor" / "doğrulanmadı" etiketi alır; düzeltmeler statik olarak doğrulanır
+  (geçerli Python, adlar korundu, bulgu azaldı, yeni bulgu yok). Hız ve çıktı eşitliği Dinamik Analiz'de ölçülür.
+- Kayıtlı yanıt önbelleği (`.llm_cache/`): internet kesilirse ya da kota dolarsa son başarılı yanıt "kayıtlı yanıt" etiketiyle gösterilir.
+- "Modelleri listele": anahtarın kullanabildiği modelleri sağlayıcıdan sorar (model adları sık değiştiği için sabit yazılmadı).
+- LLM sekmesinden "Dinamik Analiz'e gönder" düğmesi; LLM açıklamaları Kod İnceleme bulgu kartlarında da görünür.
+- 17 yeni test (sahte ağ katmanıyla; gerçek sağlayıcı çağrısı testlerde yapılmaz).
+
+- Sağlayıcı yoğunken (5xx) otomatik yeniden deneme (2 sn, 4 sn) ve yedek modellere geçiş (`gemini-2.5-flash`, `gemini-2.5-flash-lite`); gerçekte kullanılan model ekranda yazılır.
+
+### Security
+- API anahtarı yalnızca bellekte tutulur; URL'ye, istek gövdesine, önbelleğe ve `repr`'e girmez (HTTP başlığında gönderilir).
+- Kod modele "veri" olarak verilir; modelin çıktısı her durumda doğrulanır. Gönderim için açık onay kutusu vardır.
+
+## Unreleased — Adım 4: Dinamik Analiz sekmesi
+
+### Added
+- `benchmark.docker_status()`: Docker komutu / servisi / imajı için üç basamaklı durum kontrolü (arayüzde kontrol listesi).
+- **Yerel yedek mod** (`BenchmarkOptions(mode="yerel")`): Docker yokken ayrı süreçte, boş ortamda, süre sınırıyla
+  (Linux/macOS'ta ayrıca bellek/CPU sınırı) ölçüm. Gerçek izolasyon değildir; arayüzde açık uyarı ve onay kutusu var.
+- `benchmark.summarize()`: hız ve bellek oranı, %10 gürültü eşiğiyle Türkçe karar cümlesi.
+- Dinamik sekmede hazır örnek (döngüde liste birleştirme), iki modun güvenlik karşılaştırma tablosu ve
+  "statik ve dinamik sonuç yan yana" tablosu.
+- 12 yeni test (yerel mod, zaman aşımı, özet, Docker durumu, arayüz akışları).
+
+- `benchmark.find_docker()`: `docker` PATH'te yoksa Docker Desktop'ın bilinen kurulum klasörlerinde arar
+  (Windows'ta kurulumdan önce açılmış pencerelerde PATH güncel olmaz).
+
+### Changed
+- `benchmark.py` hata mesajları ve runner çıktıları Türkçeleştirildi; `runner.py` çalışma klasörünü argümandan alır.
+- Başlıktaki Docker göstergesi artık yalnızca komutun varlığına değil servisin çalışmasına bakar.
+
+## Önceki — Türkçe arayüz ve statik/dinamik sekmeleri
+
+### Added
+- `quality_studio/astview.py`: AST ağacı metni, bulgu-düğüm eşlemesi, kategori sayıları ve kural tablosu.
+- Arayüzde **Statik Analiz** sekmesi (AST ağacı, tetiklenen kurallar, dağılım, kural kataloğu) ve **Dinamik Analiz**
+  sekmesi (Docker ile önce/sonra ölçümü, statik/dinamik karşılaştırma tablosu); **LLM Açıklama** için yer tutucu sekme.
+- Katman durumu satırı: statik hazır, dinamik (Docker bulundu mu), LLM bağlı değil.
+- `models.py`: `CATEGORY_TR`, `SEVERITY_TR`, `CONFIDENCE_TR` görüntüleme sözlükleri (iç anahtarlar İngilizce kalır).
+- `tests/test_astview.py` ve sahte `streamlit` ile `tests/test_app_smoke.py`.
+
+### Changed
+- 36 kuralın adı, "neden sorun?" ve "nasıl düzelir?" metinleri ile bulgu mesajları Türkçe ve kısa hale getirildi.
+- Arayüz, CLI yardım metinleri, rapor (HTML/metin), yama açıklamaları, diff/kod görünümü ve hata mesajları Türkçeleştirildi.
+- Docker benchmark paneli "Kod İnceleme" içinden çıkarılıp **Dinamik Analiz** sekmesine taşındı.
+- `benchmark.py` hata mesajları henüz İngilizce (Dinamik katman adımında çevrilecek).
+
 ## Unreleased — dynamic before/after
 
 ### Added

@@ -17,7 +17,7 @@ class DatasetLoadingTests(unittest.TestCase):
     def test_empty_and_row_limit(self):
         with self.assertRaises(ValueError):
             load_dataset("label,code\n")
-        with self.assertRaisesRegex(ValueError, "Maximum 2 samples"):
+        with self.assertRaisesRegex(ValueError, "En fazla 2 örnek"):
             load_dataset("label,code\na,x\na,y\na,z\n", max_rows=2)
 
     def test_large_field_not_limited_to_128kb(self):
@@ -26,7 +26,7 @@ class DatasetLoadingTests(unittest.TestCase):
         self.assertEqual(len(samples[0][1]), len(big))
 
     def test_oversize_sample_has_row_number(self):
-        with self.assertRaisesRegex(ValueError, "Row 2"):
+        with self.assertRaisesRegex(ValueError, "Satır 2"):
             load_dataset("label,code\nh,aaaaaaaaaa\n", max_chars=5)
 
     def test_bytes_with_bom(self):
@@ -74,12 +74,12 @@ class DatasetEvaluationTests(unittest.TestCase):
         ai = result["labels"]["ai"]
         self.assertEqual((ai["samples"], ai["valid_samples"], ai["syntax_errors"]), (10, 5, 5))
         self.assertEqual(ai["syntax_error_rate"], 0.5)
-        self.assertTrue(any("syntax errors" in w for w in result["warnings"]))
+        self.assertTrue(any("sözdizimi hatası" in w for w in result["warnings"]))
         self.assertAlmostEqual(result["comparisons"][0]["syntax_error_fisher_p"], 0.1009, places=3)
 
     def test_small_groups_are_warned(self):
         result = evaluate_dataset([("a", GOOD), ("b", BAD)])
-        self.assertTrue(any("unreliable" in w for w in result["warnings"]))
+        self.assertTrue(any("güvenilmezdir" in w for w in result["warnings"]))
 
     def test_multiple_labels_bonferroni(self):
         samples = [(label, code) for label, code in (("a", GOOD), ("b", BAD), ("c", GOOD)) for _ in range(6)]
@@ -106,7 +106,7 @@ class GroundTruthTests(unittest.TestCase):
     def test_only_documented_limitations_disagree(self):
         report = evaluate()
         for mismatch in report["mismatches"]:
-            self.assertIn("known limitation", mismatch["note"], mismatch)
+            self.assertIn("bilinen sınırlama", mismatch["note"], mismatch)
             self.assertEqual(mismatch["unexpected"], [])
 
     def test_quality_floor(self):

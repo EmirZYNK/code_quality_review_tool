@@ -26,7 +26,7 @@ def impact(before: str, after: str, config: Config | None = None) -> dict:
     """Compare two versions. Returns {'valid': False, ...} unless both parse."""
     first, second = analyze(before, config), analyze(after, config)
     if not (first.valid and second.valid):
-        return {"valid": False, "error": "Both versions must be syntactically valid Python."}
+        return {"valid": False, "error": "Her iki sürüm de geçerli Python olmalıdır."}
     b = Counter(map(_fingerprint, first.findings))
     a = Counter(map(_fingerprint, second.findings))
     resolved, introduced = b - a, a - b
@@ -50,10 +50,10 @@ def impact(before: str, after: str, config: Config | None = None) -> dict:
         "removed_lines": removed,
         "runtime": {
             "measured": False,
-            "reason": "Submitted code is not executed. Static metrics cannot establish speed or memory use.",
+            "reason": "Gönderilen kod çalıştırılmadı. Statik ölçümler hız veya bellek kullanımını kanıtlayamaz.",
         },
-        "limitations": "The rule-based score and AST counts are proxies, not proof of correctness, "
-                       "maintainability, security or performance.",
+        "limitations": "Kural tabanlı skor ve AST sayıları birer göstergedir; doğruluk, bakım kolaylığı, "
+                       "güvenlik veya performans kanıtı değildir.",
     }
 
 

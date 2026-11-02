@@ -33,13 +33,13 @@ class ProjectScanTests(unittest.TestCase):
         self.assertGreaterEqual(summary["high_priority"], 1)
 
     def test_errors(self):
-        with self.assertRaisesRegex(ValueError, "No .py"):
+        with self.assertRaisesRegex(ValueError, ".py dosyası bulunamadı"):
             scan_archive(make_zip({"README.md": "hi"}))
-        with self.assertRaisesRegex(ValueError, "Unsafe"):
+        with self.assertRaisesRegex(ValueError, "Güvensiz"):
             scan_archive(make_zip({"../bad.py": "x=1"}))
-        with self.assertRaisesRegex(ValueError, "too large"):
+        with self.assertRaisesRegex(ValueError, "çok büyük"):
             scan_archive(make_zip({"big.py": "x" * 250_001}))
-        with self.assertRaisesRegex(ValueError, "Invalid"):
+        with self.assertRaisesRegex(ValueError, "Geçersiz"):
             scan_archive(b"not a zip")
 
     def test_pycache_and_venv_are_skipped(self):

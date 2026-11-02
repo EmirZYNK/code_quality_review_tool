@@ -17,7 +17,7 @@ def _syntax_result(error: Exception, config: Config) -> AnalysisResult:
     message = getattr(error, "msg", None) or str(error)
     finding = Finding(
         rule=meta.id, category=meta.category, severity=meta.severity, line=line, end_line=line,
-        message="Syntax error", why=message, fix=meta.fix, confidence=meta.confidence,
+        message="Sözdizimi hatası", why=f"Python hatası: {message}", fix=meta.fix, confidence=meta.confidence,
     )
     return AnalysisResult(valid=False, findings=[finding], metrics={})
 
@@ -34,7 +34,7 @@ def analyze(code: str, config: Config | None = None, *, external: bool = False) 
     """
     config = config or DEFAULT_CONFIG
     if len(code.encode("utf-8")) > config.max_source_bytes:
-        raise ValueError(f"Maximum source size is {config.max_source_bytes // 1000} KB")
+        raise ValueError(f"Kaynak en fazla {config.max_source_bytes // 1000} KB olabilir")
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
@@ -47,7 +47,7 @@ def analyze(code: str, config: Config | None = None, *, external: bool = False) 
             check(ctx)
         metrics = structure_metrics(code, tree)
     except RecursionError as exc:
-        raise ValueError("Source is nested too deeply to analyse") from exc
+        raise ValueError("Kaynak çözümlenemeyecek kadar derin iç içe") from exc
 
     findings = ctx.findings
     external_status: dict = {}
