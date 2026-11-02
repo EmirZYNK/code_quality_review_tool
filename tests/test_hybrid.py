@@ -303,5 +303,181 @@ class LocalMultiCaseTests(unittest.TestCase):
         self.assertEqual(result["cases_total"], 1)
 
 
+EVAL_CODE = "def run(v):\n    return eval(v)\n"
+
+
+class VerdictReviewTests(Isolated):
+    """Adım 2: LLM her AST bulgusunu doğrular/eler; AST'nin kaçırdıkları 'doğrulanmadı' etiketiyle eklenir."""
+
+    def _reply(self, records, **overrides):
+        reply = {"aciklamalar": records, "kod": AFTER, "degisiklikler": ["x"], "fonksiyon": "build",
+                 "test_girdileri": [{"etiket": "orta", "args": [300]}]}
+        reply.update(overrides)
+        return reply
+
+    def _review(self, records, **overrides):
+        return hybrid.review_and_fix(BEFORE, self.findings, SETTINGS,
+                                     transport=transport_returning(self._reply(records, **overrides))).data
+
+    def _record(self, **fields):
+        return {"rule": self.perf["rule"], "line": self.perf["line"], **fields}
+
+    def test_verdict_and_reason_are_kept(self):
+        data = self._review([self._record(karar="onayla", gerekce="Döngüde liste büyüyor.", neden="n", duzeltme="d")])
+        note = data["aciklamalar"][f"{self.perf['rule']}:{self.perf['line']}"]
+        self.assertEqual((note["karar"], note["gerekce"]), ("onayla", "Döngüde liste büyüyor."))
+        self.assertEqual(data["reddedilen_karar"], 0)
+
+    def test_old_style_record_without_verdict_still_works(self):
+        data = self._review([self._record(neden="n", duzeltme="d")])
+        self.assertIsNone(next(iter(data["aciklamalar"].values()))["karar"])
+
+    def test_elimination_without_reason_is_dropped_but_explanation_survives(self):
+        data = self._review([self._record(karar="yanlis_pozitif", neden="n", duzeltme="d")])
+        note = next(iter(data["aciklamalar"].values()))
+        self.assertIsNone(note["karar"])  # gerekçesiz eleme sessizce bir bulguyu yok saymasın
+        self.assertEqual(data["reddedilen_karar"], 1)
+
+    def test_unknown_verdict_value_is_dropped(self):
+        data = self._review([self._record(karar="belki", gerekce="Uzun bir gerekçe.", neden="n", duzeltme="d")])
+        self.assertIsNone(next(iter(data["aciklamalar"].values()))["karar"])
+        self.assertEqual(data["reddedilen_karar"], 1)
+
+    def test_verdict_record_needs_no_old_style_fields(self):
+        data = self._review([self._record(karar="baglama_bagli", gerekce="Girdi büyüklüğüne bağlı.")])
+        note = next(iter(data["aciklamalar"].values()))
+        self.assertEqual((note["karar"], note["neden"], note["duzeltme"]), ("baglama_bagli", "Girdi büyüklüğüne bağlı.", ""))
+
+    def test_invented_rule_with_verdict_is_rejected(self):
+        data = self._review([self._record(karar="onayla", gerekce="Uzun gerekçe.", neden="n", duzeltme="d"),
+                             {"rule": "SEC999", "line": 1, "karar": "yanlis_pozitif", "gerekce": "Uydurma kural."}])
+        self.assertEqual(len(data["aciklamalar"]), 1)
+        self.assertEqual(data["reddedilen"], 1)
+
+    def test_extra_issues_are_checked_against_real_code(self):
+        extras = [
+            {"line": 40, "alinti": "return result", "kategori": "Style", "baslik": "Ad", "neden": "n", "duzeltme": "d"},
+            {"line": 4, "alinti": "result = result + [i * 2]", "kategori": "Performance", "baslik": "b", "neden": "n",
+             "duzeltme": "d"},
+            {"line": 3, "alinti": "os.system(komut)", "kategori": "Security", "baslik": "uydurma", "neden": "n",
+             "duzeltme": "d"},
+            {"line": 2, "alinti": "x", "kategori": "Style", "baslik": "çok kısa", "neden": "n", "duzeltme": "d"},
+        ]
+        data = self._review([self._record(karar="onayla", gerekce="Uzun gerekçe.", neden="n", duzeltme="d")],
+                            ek_sorunlar=extras)
+        by_line = {e["line"]: e for e in data["ek_sorunlar"]}
+        self.assertEqual(set(by_line), {4, 5})  # satır 40 alıntıya göre 5'e düzeltildi
+        self.assertEqual(by_line[4]["ast_rules"], ["PERF103"])  # yalnızca aynı kategorideki AST bulgusu örtüşür
+        self.assertEqual(data["reddedilen_ek"], 2)  # uydurma alıntı + fazla kısa alıntı
+
+    def test_extra_issue_without_any_ast_finding_is_labelled_unverified(self):
+        records = [{"line": 5, "alinti": "return result", "kategori": "Style", "baslik": "b", "neden": "n",
+                    "duzeltme": "d"}]
+        accepted, rejected = llm.clean_candidates(records, BEFORE, [], relocate=True)
+        self.assertEqual((accepted[0]["status"], rejected), ("unverified", 0))
+        self.assertEqual(llm.clean_candidates(records, BEFORE, self.findings, relocate=True)[0][0]["status"],
+                         "ast_overlap")
+
+    def test_unrelated_function_wide_finding_does_not_hide_a_missed_issue(self):
+        # CQ103 (Stil) tüm fonksiyonu kapsar; Güvenlik kategorisindeki kaçırılan sorun yine de 'doğrulanmadı' kalır
+        records = [{"line": 5, "alinti": "return result", "kategori": "Security", "baslik": "b", "neden": "n",
+                    "duzeltme": "d"}]
+        accepted, _ = llm.clean_candidates(records, BEFORE, self.findings, relocate=True)
+        self.assertEqual((accepted[0]["status"], accepted[0]["ast_rules"]), ("unverified", []))
+
+    def test_relocation_is_off_by_default_so_the_old_second_opinion_stays_strict(self):
+        records = [{"line": 40, "alinti": "return result", "kategori": "Style", "baslik": "b", "neden": "n",
+                    "duzeltme": "d"}]
+        self.assertEqual(llm.clean_candidates(records, BEFORE, [])[1], 1)
+
+    def test_extra_issues_are_capped(self):
+        extras = [{"line": 5, "alinti": "return result", "kategori": "Style", "baslik": str(i), "neden": "n",
+                   "duzeltme": "d"} for i in range(9)]
+        data = self._review([self._record(karar="onayla", gerekce="Uzun gerekçe.", neden="n", duzeltme="d")],
+                            ek_sorunlar=extras)
+        self.assertEqual(len(data["ek_sorunlar"]), hybrid.MAX_EXTRA_ISSUES)
+
+    def test_unchanged_code_is_not_presented_as_a_failed_fix(self):
+        data = self._review([self._record(karar="yanlis_pozitif", gerekce="Bu kodda sorun yok.", neden="", duzeltme="")],
+                            kod=BEFORE)
+        self.assertIsNone(data["kod"])
+        self.assertTrue(data["degisiklik_yok"])
+        self.assertIsNone(data["dogrulama"])
+
+    def test_extras_alone_make_a_usable_reply(self):
+        extras = [{"line": 5, "alinti": "return result", "kategori": "Style", "baslik": "b", "neden": "n", "duzeltme": "d"}]
+        data = self._review([], ek_sorunlar=extras, kod="")
+        self.assertEqual(len(data["ek_sorunlar"]), 1)
+
+    def test_prompt_asks_for_verdicts_extras_and_untouched_false_positives(self):
+        calls = []
+        hybrid.review_and_fix(BEFORE, self.findings, SETTINGS,
+                              transport=transport_returning(self._reply([self._record(neden="n", duzeltme="d")]), calls))
+        text = calls[0]["contents"][0]["parts"][0]["text"]
+        for needle in ("yanlis_pozitif", "baglama_bagli", "ek_sorunlar", "DOKUNMA", "gerekce"):
+            self.assertIn(needle, text)
+        self.assertEqual(len(calls), 1)  # kota: hâlâ tek çağrı
+
+
+class VerdictCardTests(unittest.TestCase):
+    def setUp(self):
+        self.findings = analyze(EVAL_CODE).issues
+        self.eval_finding = next(f for f in self.findings if f["rule"] == "SEC101")
+
+    def _cards(self, verdict="yanlis_pozitif", rule="SEC101"):
+        notes = {f"{f['rule']}:{f['line']}": {"neden": "n", "duzeltme": "d", "karar": verdict, "gerekce": "Sabit metin."}
+                 for f in self.findings if f["rule"] == rule}
+        return hybrid.build_cards(self.findings, notes, None, None, llm_ran=True)
+
+    def _card(self, cards, rule="SEC101"):
+        return next(c for c in cards if c["finding"]["rule"] == rule)
+
+    def test_eliminated_finding_is_kept_marked_and_explained(self):
+        cards = self._cards()
+        self.assertEqual(len(cards), len(self.findings))  # hiçbir bulgu silinmedi
+        card = self._card(cards)
+        self.assertEqual(card["verdict"], "yanlis_pozitif")
+        self.assertEqual(hybrid.card_marker(card), "⊘")
+        llm_badge = next(b for b in card["badges"] if b["layer"] == "LLM")
+        self.assertEqual(llm_badge["status"], "na")
+        self.assertIn("Sabit metin.", llm_badge["text"])
+
+    def test_eliminating_a_high_severity_finding_is_flagged_risky(self):
+        self.assertTrue(self._card(self._cards())["risky_elimination"])
+        self.assertFalse(self._card(self._cards("onayla"))["risky_elimination"])
+
+    def test_confirmed_and_context_dependent_verdicts_have_their_own_badges(self):
+        self.assertEqual(next(b for b in self._card(self._cards("onayla"))["badges"] if b["layer"] == "LLM")["status"], "ok")
+        context = self._card(self._cards("baglama_bagli"))
+        self.assertEqual(next(b for b in context["badges"] if b["layer"] == "LLM")["status"], "warn")
+        self.assertEqual(hybrid.card_marker(context), "•")
+
+    def test_active_findings_exclude_only_eliminated_ones(self):
+        active = hybrid.active_findings(self._cards())
+        self.assertNotIn("SEC101", [f["rule"] for f in active])
+        self.assertEqual(len(active), len(self.findings) - 1)
+
+    def test_summary_counts_and_score_effect_use_the_same_formula(self):
+        cards = self._cards()
+        summary = hybrid.verdict_summary(cards, 2)
+        self.assertEqual((summary["yanlis_pozitif"], summary["karar_yok"], summary["riskli_eleme"]), (1, 1, 1))
+        self.assertEqual(summary["skor_ast"], analyze(EVAL_CODE).metrics["score"])  # AST skoru değişmedi
+        self.assertGreater(summary["skor_llm_sonrasi"], summary["skor_ast"])  # elenince skor yalnızca ayrı gösterilir
+
+    def test_report_carries_verdicts_and_extra_issues(self):
+        extras = [{"line": 2, "quote": "return eval(v)", "category": "Security", "title": "t", "why": "w", "fix": "f",
+                   "status": "unverified", "ast_rules": []}]
+        report = hybrid.hybrid_report(EVAL_CODE, None, self._cards(), None, None, {"model": "m"}, extras)
+        self.assertTrue(report["llm_review"]["ran"])
+        self.assertEqual(report["llm_review"]["summary"]["yanlis_pozitif"], 1)
+        self.assertEqual(report["llm_review"]["extra_issues"], extras)
+        self.assertIn("yanlis_pozitif", [f["llm_verdict"] for f in report["findings"]])
+        json.dumps(report, ensure_ascii=False)
+
+    def test_report_without_llm_says_it_did_not_run(self):
+        cards = hybrid.build_cards(self.findings, None, None, None)
+        self.assertFalse(hybrid.hybrid_report(EVAL_CODE, None, cards, None, None)["llm_review"]["ran"])
+
+
 if __name__ == "__main__":
     unittest.main()

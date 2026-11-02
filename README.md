@@ -22,13 +22,14 @@ Arayüz tamamen Türkçedir. Üç sekme vardır:
 
 | Sekme | Ne gösterir |
 |---|---|
-| **Hibrit İnceleme** | Tek ekranda: kod → statik sonuç ve bulgu kartları (Statik / LLM / Dinamik rozetleri) → tek LLM çağrısı (açıklama + düzeltme + test girdisi) → Önce \| Sonra statik doğrulama → çalıştırarak ölçme → üç katmanın tek karar kartı |
+| **Hibrit İnceleme** | Tek sayfada beş bölüm: **1) Statik analiz** (AST bulguları, işaretli kod) → **2) LLM doğrulama ve açıklama** (her bulgu için onayla / yanlış pozitif / bağlama bağlı + gerekçe, koda özel açıklama, AST'nin kaçırdığı sorunlar *doğrulanmadı* etiketiyle) → **3) Önerileri uygula** (Önce \| Sonra) → **4) Dinamik analiz** (çalıştırarak ölçme) → **5) Karar kartı** |
 | **Proje ve Değerlendirme** | ZIP projesinin statik taraması, İnsan vs YZ istatistiksel karşılaştırması, kural bazında precision/recall |
 | **Katmanlar ve Sunum Rehberi** | statik / dinamik / LLM katmanlarının anlatımı, AST ağacı, elle dinamik ölçüm, sunumda ne söylenmeli |
 
-**Hibrit zincir:** LLM önerir → AST doğrular → çalıştırma ölçer. LLM'in açıklaması yalnızca gerçek (kural, satır) çiftleri için,
-düzeltmesi ancak statik doğrulamadan geçerse, test girdileri ancak geçerli JSON ise kabul edilir. Davranış ve hız LLM'e
+**Hibrit zincir:** AST bulur → LLM doğrular ya da eler → çalıştırma ölçer. LLM'in kararı ve açıklaması yalnızca gerçek (kural, satır) çiftleri için, eleme kararı yalnızca gerekçesiyle kabul edilir; elenen bulgu silinmez (gri ve gerekçeli kalır, skoru ayrıca gösterilir). AST'nin kaçırdığı sorunların satırı ve alıntısı gerçek koda uymalıdır. Düzeltme ancak statik doğrulamadan geçerse, test girdileri ancak geçerli JSON ise kabul edilir. Davranış ve hız LLM'e
 sorulmaz, Docker'da (ya da uyarılı yerel yedek modda) ölçülür. Ölçüm yalnızca denenen girdiler için geçerlidir.
+
+**Sıfır tolerans ve tam davranış karşılaştırması:** düşük önemli bile olsa yeni bulgu doğuran düzeltme reddedilir. Dinamik analizde değişen **her** genel fonksiyon kendi test girdisiyle sınanır (girdisiz kalan fonksiyon varsa karar "kısmen" olur); dönüş değeri, `print` çıktısı, hata ve girdilerin yerinde değişmesi birebir karşılaştırılır. Statik kural bir performans bulgusunu çözülmüş saydığı halde ölçümde hız kazancı yoksa uyarı verilir.
 
 ## Testler
 

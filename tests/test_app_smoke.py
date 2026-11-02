@@ -178,7 +178,7 @@ class AppSmokeTests(unittest.TestCase):
 
     def test_hybrid_llm_then_measure_flow_with_mocked_layers(self):
         from quality_studio import llm
-        button = "Hibrit incelemeyi çalıştır (LLM açıklar, düzeltir, test girdisi önerir)"
+        button = "Hibrit incelemeyi çalıştır (LLM doğrular, açıklar, düzeltir)"
         fake = FakeStreamlit(pressed={"Kodu analiz et", button, "Önerilen düzeltmeyi ölçerek doğrula"}, checked=True)
         fake.session_state["llm_key"] = "test-anahtari"
         result = {"ok": True, "mode": "docker", "cases_total": 1, "cases_same": 1, "headline_case": "tipik",
@@ -217,6 +217,55 @@ class AppSmokeTests(unittest.TestCase):
             _run_app(fake)
         bench.assert_not_called()
         self.assertTrue(any("Geçersiz JSON" in str(a) for a in fake.logged("error")))
+
+
+    def _headings(self, fake):
+        return [a[0] for a in fake.logged("markdown") if a and isinstance(a[0], str) and a[0].startswith("#### ")]
+
+    def test_hybrid_page_has_the_five_sections_in_order(self):
+        fake = FakeStreamlit(pressed={"Kodu analiz et"})
+        fake.session_state["editor"] = "def run(v):\n    return eval(v)\n"
+        _run_app(fake)
+        wanted = ["1) Statik analiz", "2) LLM doğrulama", "3) Önerileri uygula", "4) Dinamik analiz", "5) Karar kartı"]
+        found = [next(w for w in wanted if h[5:].startswith(w)) for h in self._headings(fake)
+                 if any(h[5:].startswith(w) for w in wanted)]
+        self.assertEqual(found, wanted)  # beş bölüm, bu sırayla, her biri bir kez
+        self.assertEqual(fake.logged("error"), [])
+
+    def test_hybrid_old_sections_are_gone(self):
+        fake = FakeStreamlit(pressed={"Kodu analiz et"})
+        fake.session_state["editor"] = "def run(v):\n    return eval(v)\n"
+        _run_app(fake)
+        text = " ".join(str(a) for a in fake.logged("markdown")) + " ".join(str(a) for a in fake.logged("expander"))
+        self.assertNotIn("ikinci görüş", text)
+        self.assertNotIn("7) Reddedildiyse", text)
+
+    def test_hybrid_shows_verdicts_grays_out_eliminations_and_lists_extra_issues(self):
+        from quality_studio import llm
+        from quality_studio.engine import analyze
+        code = "def run(v):\n    return eval(v)\n"
+        finding = next(f for f in analyze(code).issues if f["rule"] == "SEC101")
+        notes = {f"{finding['rule']}:{finding['line']}": {"neden": "", "duzeltme": "", "karar": "yanlis_pozitif",
+                                                           "gerekce": "Girdi sabit bir metin."}}
+        extra = {"line": 2, "quote": "return eval(v)", "category": "Security", "title": "Yanıltıcı ad", "why": "w",
+                 "fix": "f", "status": "unverified", "ast_rules": []}
+        data = {**self._llm_data(), "kod": None, "degisiklik_yok": True, "test_girdileri": [], "fonksiyon": None,
+                "aciklamalar": notes, "ek_sorunlar": [extra], "reddedilen_ek": 1, "reddedilen_karar": 0}
+        button = "Hibrit incelemeyi çalıştır (LLM doğrular, açıklar, düzeltir)"
+        fake = FakeStreamlit(pressed={"Kodu analiz et", button}, checked=True)
+        fake.session_state.update(editor=code, llm_key="test-anahtari")
+        with mock.patch("quality_studio.hybrid.review_and_fix", return_value=llm.Outcome(data, "canlı", "m")):
+            _run_app(fake)
+            _run_app(fake)
+        markdown = " ".join(str(a) for a in fake.logged("markdown"))
+        self.assertIn(":gray[**LLM bu bulguyu eledi", markdown)       # elenen bulgu gri ve gerekçeli
+        self.assertIn("Girdi sabit bir metin.", markdown)
+        self.assertIn("Elenen bulgular", markdown)                     # silinmedi, ayrı grupta duruyor
+        self.assertTrue(any("Yüksek önemli bir bulgu elendi" in str(a) for a in fake.logged("warning")))
+        tables = " ".join(str(a) for a in fake.logged("dataframe"))
+        self.assertIn("Doğrulanmadı (öneri)", tables)                  # AST'nin kaçırdığı sorun etiketli
+        self.assertTrue(any("kodda değişiklik önermedi" in str(a) for a in fake.logged("info")))
+        self.assertEqual(fake.logged("error"), [])
 
 
 if __name__ == "__main__":

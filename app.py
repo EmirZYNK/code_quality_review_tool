@@ -468,15 +468,20 @@ def _llm_intro() -> None:
     st.subheader("LLM katmanı: yapay zekâ ile anlama")
     st.markdown(
         "Statik analiz kuralları bilir ama **kodun ne yapmaya çalıştığını anlamaz**. LLM katmanı, **tek bir çağrıda** "
-        "üç iş yapar:\n\n"
-        "1. **Bulguları bu koda özgü açıklar** (kısa Türkçe, neden + nasıl düzelir).\n"
-        "2. **Düzeltilmiş kod önerir** (kuralların resmi düzeltme önerilerine uymaya çalışır).\n"
-        "3. **Test girdileri önerir** (sınır, tipik ve orta büyüklükte girdi); dinamik ölçüm bunları kullanır.\n\n"
-        "Kuralların kaçırdığı adaylar ise ana akışın dışında, ayrı bir *ikinci görüş* bölümündedir.")
+        "dört iş yapar:\n\n"
+        "1. **AST bulgularını doğrular ya da eler** (onayla / yanlış pozitif / bağlama bağlı, gerekçesiyle). "
+        "Elenen bulgu silinmez, gri ve gerekçeli kalır.\n"
+        "2. **Bulguları bu koda özgü açıklar** (kısa Türkçe, neden + nasıl düzelir) ve **AST'nin kaçırdığı anlamsal "
+        "sorunları** *doğrulanmadı* etiketiyle ekler.\n"
+        "3. **Düzeltilmiş kod önerir** (kuralların resmi düzeltme önerilerine uymaya çalışır).\n"
+        "4. **Test girdileri önerir** (sınır, tipik ve orta büyüklükte girdi); dinamik ölçüm bunları kullanır.")
     with st.expander("Güvence zinciri: LLM'e neden körü körüne güvenmiyoruz?", expanded=True):
         st.markdown(
             "LLM hata yapabilir ve uydurabilir. Bu yüzden **söylediği her şey doğrulanır**:\n\n"
-            "- **Açıklama:** yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için kabul edilir; uydurmalar atılır.\n"
+            "- **Doğrulama/eleme ve açıklama:** yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için kabul edilir; "
+            "uydurmalar atılır. Eleme kararı gerekçesiz kabul edilmez; elenen bulgu silinmez.\n"
+            "- **Ek (kaçırılan) sorun:** satır ve alıntı gerçek koda uymalıdır; uymazsa atılır. Kabul edilen ek sorun "
+            "*doğrulanmadı* etiketiyle kalır, kesin bulgu sayılmaz.\n"
             "- **Düzeltme:** geçerli Python olmalı, adlar korunmalı, bulgular azalmalı, yeni bulgu doğmamalı (**statik doğrulama**).\n"
             "- **Test girdisi ve fonksiyon adı:** JSON olarak geçerli olmalı, fonksiyon iki sürümde de bulunmalı. "
             "Doğru çıktıyı LLM'in bilmesi gerekmez: **Önce sürümü referanstır**, Sonra'nın çıktısı onunla karşılaştırılır.\n"
@@ -543,26 +548,6 @@ def _llm_fresh(name: str, code: str) -> dict | None:
 
 
 STATUS_TR = {"ast_overlap": "AST ile örtüşüyor", "unverified": "Doğrulanmadı (öneri)"}
-
-
-def _llm_candidates_section(code: str, findings: list[dict], settings, live: bool) -> None:
-    st.markdown("#### 2) Kuralların kaçırdığı adaylar")
-    if st.button("Aday sorunları öner", key="llm_cand_btn"):
-        _llm_run("llm_cand", llm.suggest_candidates, code, findings, settings, live)
-    stored = _llm_fresh("llm_cand", code)
-    if not stored:
-        return
-    _llm_badge(stored)
-    rows = stored["data"]["adaylar"]
-    if not rows:
-        st.success("LLM yeni bir aday öneremedi (ya da önerdikleri doğrulamadan geçmedi).")
-    else:
-        st.dataframe([{"Satır": r["line"], "Kategori": _category_tr(r["category"]), "Başlık": r["title"],
-                       "Neden": r["why"], "Öneri": r["fix"], "Durum": STATUS_TR[r["status"]],
-                       "Örtüşen kural": ", ".join(r["ast_rules"])} for r in rows], hide_index=True)
-        st.caption("**Doğrulanmadı** etiketi: LLM'in görüşü; statik kurallar bunu teyit edemedi. Kesin bulgu sayılmaz.")
-    if stored["data"]["reddedilen"]:
-        st.caption(f"{stored['data']['reddedilen']} aday atıldı: satır numarası veya alıntı gerçek koda uymuyordu.")
 
 
 def _project_tab() -> None:
@@ -663,18 +648,30 @@ DEFAULT_CASES = '[{"etiket": "tipik", "args": [10], "kwargs": {}}]'
 SPINNER_TEXT = "Çalışıyor (Docker modunda ilk çalıştırmada imaj indirilebilir)..."
 
 
+BADGE_LEGEND = (
+    "- **Statik:** AST kuralı bulguyu kodu çalıştırmadan buldu. Düzeltmeden sonra kod yeniden analiz edilir; "
+    "bulgu artık yoksa *çözüldü* sayılır.\n"
+    "- **LLM:** bulguyu bu kod bağlamında *onayladı*, *eledi (yanlış pozitif)* ya da *bağlama bağlı* dedi ve koda özgü "
+    "açıkladı. Yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri kabul edilir; eleme gerekçesizse atılır.\n"
+    "- **Dinamik:** iki sürüm aynı girdilerle çalıştırıldı. Bir bulgunun *giderildiğini* kanıtlamaz; "
+    "**davranışın korunduğunu** ve **hızın değiştiğini** gösterir, yalnızca denenen girdiler için.\n"
+    "- ✓ çözüldü/doğrulandı · ⊘ LLM eledi (silinmez, gerekçesiyle durur) · • açık · ✗ reddedildi · "
+    "! dikkat · – yapılmadı ya da yapılamadı"
+)
+# Bu bölümdeki widget'lar, kod geçici olarak geçersizken (ör. yazım sırasında sözdizimi hatası) çizilmez.
+# Anahtar, sağlayıcı ve onay kutuları o turlarda silinmesin diye durumları her turda yeniden yazılır.
+HYBRID_KEPT_STATE = ("hy_after", "hy_cases", "llm_key", "llm_provider", "llm_model_name", "llm_live", "llm_consent",
+                     "hy_show_elim", "hy_mode", "hy_consent", "hy_repeats", "hy_allow_change", "hy_rounds")
+VERDICT_TAG = {"onayla": "LLM onayladı", "yanlis_pozitif": "LLM eledi", "baglama_bagli": "bağlama bağlı"}
+
+
 def _hybrid_intro() -> None:
-    st.subheader("Hibrit İnceleme: statik + LLM + dinamik, tek ekranda")
-    st.markdown("Zincir: **LLM önerir → AST doğrular → çalıştırma ölçer.** Her bulgu kartında hangi katmanın "
-                "neyi doğruladığı rozetle gösterilir; en altta üç katman tek bir karara bağlanır.")
-    with st.expander("Rozetler ne anlama gelir?"):
-        st.markdown(
-            "- **Statik:** AST kuralı bulguyu kodu çalıştırmadan buldu. Düzeltmeden sonra kod yeniden analiz edilir; "
-            "bulgu artık yoksa *çözüldü* sayılır.\n"
-            "- **LLM:** bu koda özgü açıklama üretti. Yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri kabul edilir.\n"
-            "- **Dinamik:** iki sürüm aynı girdilerle çalıştırıldı. Bir bulgunun *giderildiğini* kanıtlamaz; "
-            "**davranışın korunduğunu** ve **hızın değiştiğini** gösterir, yalnızca denenen girdiler için.\n"
-            "- ✓ doğrulandı · ! dikkat · ✗ reddedildi · – yapılmadı ya da yapılamadı")
+    st.subheader("Hibrit İnceleme: AST bulur, LLM doğrular, çalıştırma ölçer")
+    st.markdown("Yukarıdan aşağıya beş bölüm: **1) AST bulguları → 2) LLM doğrulama ve açıklama → "
+                "3) Önerileri uygula (Önce | Sonra) → 4) Dinamik analiz → 5) Karar kartı.** "
+                "Her bulgu kartında hangi katmanın neyi doğruladığı rozetle gösterilir.")
+    with st.expander("Rozetler ve işaretler ne anlama gelir?"):
+        st.markdown(BADGE_LEGEND)
 
 
 def _badge_lines(badges: list[dict]) -> None:
@@ -683,16 +680,44 @@ def _badge_lines(badges: list[dict]) -> None:
         st.markdown(f":{color}[**{badge['layer']} {mark}**] {badge['text']}")
 
 
+def _md_safe(text: str) -> str:
+    """Renkli metin yönergesini (:renk[...]) bozmasın diye köşeli parantezleri kaçırır."""
+    return str(text).replace("[", "\\[").replace("]", "\\]")
+
+
+def _llm_note_block(card: dict) -> None:
+    """Kartta LLM'in kararı ve koda özel açıklaması. Elenen bulgu gri ve gerekçeli gösterilir."""
+    note, verdict = card["note"], card["verdict"]
+    if not note:
+        return
+    if verdict == "yanlis_pozitif":
+        st.markdown(f":gray[**LLM bu bulguyu eledi (yanlış pozitif):** {_md_safe(note['gerekce'])}]")
+        st.caption("Bulgu silinmedi: AST sonucu ve skoru aynen duruyor; eleme yalnızca LLM görüşüdür.")
+        if card["risky_elimination"]:
+            st.warning("Yüksek önemli bir bulgu elendi. Gerekçeyi kendiniz kontrol edin; yanlış eleme gerçek bir "
+                       "açığı gizleyebilir.")
+        return
+    if verdict == "baglama_bagli":
+        st.markdown(f":orange[**Bağlama bağlı:** {_md_safe(note['gerekce'])}]")
+    elif verdict == "onayla" and note.get("gerekce"):
+        st.markdown(f":green[**LLM onayladı:** {_md_safe(note['gerekce'])}]")
+    text = f"**LLM açıklaması (bu koda özgü)**\n\n{note['neden']}"
+    if note.get("duzeltme"):
+        text += f"\n\n**Öneri:** {note['duzeltme']}"
+    st.info(text)
+
+
 def _hybrid_card(card: dict) -> None:
     f = card["finding"]
-    title = f"{hybrid.card_marker(card)} {_severity_tr(f['severity']).upper()} · {f['rule']} · S{f['line']} · {f['message']}"
+    tag = f" · {VERDICT_TAG[card['verdict']]}" if card["verdict"] else ""
+    title = (f"{hybrid.card_marker(card)} {_severity_tr(f['severity']).upper()} · {f['rule']} · S{f['line']} · "
+             f"{f['message']}{tag}")
     with st.expander(title):
         cwe = f" · {f['cwe']}" if f.get("cwe") else ""
         st.write(f"**{_category_tr(f['category'])}** · güven: {CONFIDENCE_TR.get(f['confidence'], f['confidence'])}{cwe}")
         st.write("**Neden sorun?**", f["why"])
         st.write("**Nasıl düzelir?**", f["fix"])
-        if card["note"]:
-            st.info(f"**LLM açıklaması (bu koda özgü)**\n\n{card['note']['neden']}\n\n**Öneri:** {card['note']['duzeltme']}")
+        _llm_note_block(card)
         _badge_lines(card["badges"])
 
 
@@ -704,15 +729,56 @@ def _hybrid_cards(cards: list[dict]) -> None:
     left, right = st.columns(2)
     chosen_categories = left.multiselect("Kategoriler", categories, default=categories, format_func=_category_tr)
     chosen_severities = right.multiselect("Önem", SEVERITIES, default=SEVERITIES, format_func=_severity_tr)
-    st.caption("İşaretler: ✓ düzeltmede çözüldü · • açık · ✗ dinamik ölçüm düzeltmeyi reddetti.")
-    for card in cards:
-        if card["finding"]["category"] in chosen_categories and card["finding"]["severity"] in chosen_severities:
+    show_eliminated = st.checkbox("LLM'in elediği bulguları da göster (gri, gerekçeli)", value=True, key="hy_show_elim")
+    st.caption("İşaretler: ✓ düzeltmede çözüldü · ⊘ LLM eledi · • açık · ✗ dinamik ölçüm düzeltmeyi reddetti.")
+    visible = [c for c in cards if c["finding"]["category"] in chosen_categories
+               and c["finding"]["severity"] in chosen_severities]
+    for card in visible:
+        if card["verdict"] != "yanlis_pozitif":
+            _hybrid_card(card)
+    eliminated = [c for c in visible if c["verdict"] == "yanlis_pozitif"]
+    if eliminated and show_eliminated:
+        st.markdown("##### Elenen bulgular (LLM yanlış pozitif dedi; silinmedi)")
+        for card in eliminated:
             _hybrid_card(card)
 
 
+def _verdict_overview(cards: list[dict], result) -> None:
+    """LLM kararlarının özeti ve elemenin skora etkisi (AST skoru değişmez, 'elemeden sonra' ayrı gösterilir)."""
+    summary = hybrid.verdict_summary(cards, result.metrics["nonblank_lines"])
+    cols = st.columns(5)
+    cols[0].metric("AST bulgusu", summary["toplam"])
+    cols[1].metric("LLM onayladı", summary["onayla"])
+    cols[2].metric("Bağlama bağlı", summary["baglama_bagli"])
+    cols[3].metric("LLM eledi", summary["yanlis_pozitif"])
+    cols[4].metric("Karar gelmedi", summary["karar_yok"])
+    st.caption(f"Sezgisel skor: AST sonucu **{summary['skor_ast']}** · LLM elemesinden sonra **{summary['skor_llm_sonrasi']}**. "
+               "Eleme LLM görüşüdür; AST skoru ve bulgular değiştirilmez. 'Karar gelmedi': YZ göstergeleri LLM'e "
+               "gönderilmez, ayrıca modelin yanıtlamadığı ya da gerekçesiz bulduğumuz kararlar.")
+    if summary["riskli_eleme"]:
+        st.warning(f"{summary['riskli_eleme']} yüksek önemli bulgu elendi: gerekçelerini kendiniz kontrol edin.")
+
+
+def _hybrid_extra_issues(review: dict) -> None:
+    """AST'nin kaçırdığı, LLM'in eklediği anlamsal sorunlar. Kesin bulgu sayılmaz."""
+    data = review["data"]
+    extras = data.get("ek_sorunlar") or []
+    st.markdown("##### AST'nin kaçırdığı anlamsal sorunlar (LLM)")
+    if extras:
+        st.dataframe([{"Satır": r["line"], "Kategori": _category_tr(r["category"]), "Başlık": r["title"],
+                       "Neden": r["why"], "Öneri": r["fix"], "Durum": STATUS_TR[r["status"]],
+                       "Örtüşen kural": ", ".join(r["ast_rules"])} for r in extras], hide_index=True)
+        st.caption("**Doğrulanmadı (öneri):** LLM'in görüşü; statik kurallar teyit edemedi. Kesin bulgu sayılmaz, skora "
+                   "girmez. Satır ve alıntı gerçek koda uyduğu için listelendi.")
+    else:
+        st.caption("LLM ek bir sorun eklemedi (ya da eklediği kayıtlar gerçek koda uymadığı için atıldı).")
+    if data.get("reddedilen_ek"):
+        st.caption(f"{data['reddedilen_ek']} ek sorun atıldı: alıntı gerçek koda uymuyordu.")
+
+
 def _hybrid_analysis():
-    """Adım 1: kod girişi ve statik analiz. (kod, sonuç) döndürür; sonuç yoksa None."""
-    st.markdown("#### 1) Kod")
+    """Bölüm 1: kod girişi ve statik analiz. (kod, sonuç) döndürür; sonuç yoksa None."""
+    st.markdown("#### 1) Statik analiz: AST bulguları")
     code = _load_editor()
     live = st.toggle("Canlı analiz (düzenledikçe yeniden analiz et)", value=True, key="live_analysis")
     stale = "snapshot" in st.session_state and st.session_state["snapshot"] != code
@@ -731,6 +797,17 @@ def _hybrid_analysis():
     return snapshot, result
 
 
+def _ast_section(snapshot: str, result) -> None:
+    """Bölüm 1'in devamı: metrikler, işaretli kod ve AST bulgu tablosu (karar ve açıklama 2. bölümde)."""
+    _summary_metrics(result)
+    _code_viewer(snapshot, result.issues)
+    if result.findings:
+        st.dataframe([{"Satır": f["line"], "Kural": f["rule"], "Kategori": _category_tr(f["category"]),
+                       "Önem": _severity_tr(f["severity"]), "Bulgu": f["message"]} for f in result.issues],
+                     hide_index=True)
+        st.caption("Bu tablo yalnızca AST'nin bulduklarıdır. Aşağıda LLM her birini doğrular ya da eler.")
+
+
 def _hybrid_run(code: str, findings: list[dict], settings: llm.Settings, live: bool) -> bool:
     """Tek LLM çağrısı; başarılıysa Sonra sürümünü ve test girdilerini düzenleme kutularına yazar."""
     if not _llm_run("hy_review", hybrid.review_and_fix, code, findings, settings, live):
@@ -747,11 +824,17 @@ def _hybrid_run(code: str, findings: list[dict], settings: llm.Settings, live: b
 def _hybrid_review_notes(review: dict) -> None:
     _llm_badge(review)
     data = review["data"]
-    if data["reddedilen"] or data["reddedilen_test"]:
-        st.caption(f"Doğrulamadan geçemeyen {data['reddedilen']} açıklama ve {data['reddedilen_test']} test girdisi "
-                   "atıldı (modelin uydurduğu kural/satır ya da geçersiz JSON).")
-    if data["kod"] is None:
-        st.warning("Model bu kez düzeltilmiş kod döndürmedi; açıklamalar yine de bulgu kartlarında görünür.")
+    rejected, rejected_verdicts, rejected_tests = (data.get("reddedilen", 0), data.get("reddedilen_karar", 0),
+                                                   data.get("reddedilen_test", 0))
+    if rejected or rejected_verdicts or rejected_tests:
+        st.caption(f"Doğrulamadan geçemeyen {rejected} açıklama, {rejected_verdicts} karar (geçersiz ya da gerekçesiz) "
+                   f"ve {rejected_tests} test girdisi atıldı (modelin uydurduğu kural/satır, gerekçesiz eleme ya da "
+                   "geçersiz JSON).")
+    if data.get("degisiklik_yok"):
+        st.info("LLM kodda değişiklik önermedi (bulguların tümü elenmiş ya da kod aynı kalmış olabilir). "
+                "Elenen bulgulara dokunulmaz.")
+    elif data["kod"] is None:
+        st.warning("Model bu kez düzeltilmiş kod döndürmedi; karar ve açıklamalar yine de bulgu kartlarında görünür.")
 
 
 def _quick_patches(snapshot: str) -> None:
@@ -764,21 +847,20 @@ def _quick_patches(snapshot: str) -> None:
 
 
 def _hybrid_llm_step(snapshot: str, findings: list[dict], settings: llm.Settings, live: bool, review) -> bool:
-    """Adım 3: LLM düğmesi. Düğme kullanılabilir durumdaysa True döndürür."""
-    st.markdown("#### 3) LLM ile düzelt")
-    st.caption("Tek çağrı: bulgu açıklamaları + düzeltilmiş kod + test girdisi önerisi (1 istek). "
+    """Bölüm 2'nin düğmesi. Düğme kullanılabilir durumdaysa True döndürür."""
+    st.caption("Tek çağrı (1 istek): LLM her AST bulgusunu bu kod bağlamında **doğrular ya da eler**, koda özel açıklar, "
+               "AST'nin kaçırdığı anlamsal sorunları ekler; ayrıca düzeltilmiş kod ve test girdisi önerir. "
                "Anahtarsız da statik ve dinamik katmanlar çalışır.")
     has_key = bool(settings.resolved_key())
     if not has_key:
-        st.info("LLM için API anahtarınızı sayfanın üstündeki **Bağlantı ayarları** bölümüne yapıştırın.")
+        st.info("LLM için API anahtarınızı aşağıdaki **Bağlantı ayarları** bölümüne yapıştırın.")
     consent = st.checkbox("Bu kodun seçili sağlayıcıya gönderileceğini anlıyorum", key="llm_consent")
     ready = has_key and consent
-    if st.button("Hibrit incelemeyi çalıştır (LLM açıklar, düzeltir, test girdisi önerir)", key="hy_run",
+    if st.button("Hibrit incelemeyi çalıştır (LLM doğrular, açıklar, düzeltir)", key="hy_run",
                  disabled=not ready) and _hybrid_run(snapshot, findings, settings, live):
         st.rerun()
     if review:
         _hybrid_review_notes(review)
-    _quick_patches(snapshot)
     return ready
 
 
@@ -788,7 +870,10 @@ def _check_table(check: dict) -> None:
 
 
 def _hybrid_compare(snapshot: str, after: str, check: dict | None, review) -> None:
-    st.markdown("#### 4) Önce | Sonra (statik doğrulama)")
+    st.markdown("#### 3) Önerileri uygula: Önce | Sonra")
+    st.caption("Sonra sürümü LLM düzeltmesi, kural tabanlı hızlı yama ya da elle yazılmış olabilir. "
+               "Elenen (yanlış pozitif) bulgulara dokunulmaz.")
+    _quick_patches(snapshot)
     st.session_state.setdefault("hy_after", "")
     left, right = st.columns(2)
     left.caption(f"Önce · {len(analyze(snapshot).findings)} bulgu")
@@ -841,7 +926,10 @@ def _hybrid_dynamic(snapshot: str, after: str) -> dict | None:
 def _case_rows(result: dict) -> list[dict]:
     rows = []
     for case in result.get("cases", []):
-        row = {"Girdi": case["label"], "Çıktı aynı mı?": "Evet" if case["same"] else "HAYIR"}
+        row = {"Fonksiyon": case.get("function") or "–", "Girdi": case["label"],
+               "Davranış aynı mı?": "Evet" if case["same"] else "HAYIR"}
+        if not case["same"]:
+            row["Fark"] = ", ".join(case.get("diff") or []) or "çıktı"
         if case.get("timed"):
             b, a = case["before"]["median_ms"], case["after"]["median_ms"]
             row.update({"Önce (ms)": round(b, 4), "Sonra (ms)": round(a, 4), "Hız oranı": f"{b / a:.2f}×" if a else "–"})
@@ -860,6 +948,15 @@ def _hybrid_bench_result(stored: dict) -> None:
         st.error(result.get("error", "Ölçüm başarısız"))
         return
     summary = summarize(result)
+    speeds = hybrid.function_speeds(result)
+    if speeds:
+        st.markdown("**Fonksiyon başına hız** (her fonksiyonun Önce sürümünde en yavaş kaldığı girdi)")
+        st.dataframe([{"Fonksiyon": f["function"], "Girdi": f["case"], "Önce (ms)": round(f["before_ms"], 4),
+                       "Sonra (ms)": round(f["after_ms"], 4),
+                       "Hız oranı": f"{f['speedup']:.2f}×" if f["speedup"] else "–",
+                       "Sonuç": "daha hızlı" if f["faster"] else ("YAVAŞ" if f["slower"] else "belirgin fark yok")}
+                      for f in speeds], hide_index=True)
+        st.caption(f"{hybrid.MIN_MEANINGFUL_MS} ms'den küçük süre farkları gürültü sayılır.")
     st.caption(f"Çalışma modu: {mode_text}. Süre ve bellek, Önce sürümünün en yavaş kaldığı girdi "
                f"({result.get('headline_case', '–')}) için raporlanır. Süre ve bellek ayrı turlarda ölçülür; "
                f"tracemalloc Python ayırmalarını sayar. Süre: {summary['time_verdict']} · "
@@ -881,8 +978,21 @@ def _hybrid_mode_and_consent() -> tuple[str, bool]:
     return mode, st.checkbox(text, key="hy_consent")
 
 
+def _coverage_box(snapshot: str, after: str, cases: list[dict], default_function: str) -> None:
+    """Değişen genel fonksiyonlardan hangileri test girdisiyle sınanıyor? Sınanmayan, kabul almayı engeller."""
+    coverage = hybrid.test_coverage(snapshot, after, cases, default_function)
+    if coverage["untested"]:
+        st.warning(f"Test kapsamı eksik: {hybrid.coverage_text(coverage)} Bu fonksiyonlar için girdi eklemeden "
+                   "karar 'kabul' olamaz.")
+    elif coverage["changed"]:
+        st.success(hybrid.coverage_text(coverage))
+    if coverage["indirect"]:
+        st.caption("Doğrudan sınanamayan değişiklikler (sınıf ya da özel fonksiyon): " + ", ".join(coverage["indirect"])
+                   + ". Bunlar yalnızca onları çağıran genel fonksiyonlar üzerinden dolaylı sınanır.")
+
+
 def _hybrid_measure(snapshot: str, after: str, review) -> None:
-    st.markdown("#### 5) Çalıştırarak ölç (dinamik)")
+    st.markdown("#### 4) Dinamik analiz: çalıştırarak ölç")
     if not after.strip():
         st.info("Ölçmek için önce bir Sonra sürümü gerekir.")
         return
@@ -892,13 +1002,17 @@ def _hybrid_measure(snapshot: str, after: str, review) -> None:
         return
     suggested = (review or {}).get("data", {}).get("fonksiyon")
     functions = info["functions"]
-    function = st.selectbox("Ölçülecek fonksiyon", functions, index=functions.index(suggested) if suggested in functions else 0)
+    function = st.selectbox("Varsayılan fonksiyon (kaydında \"fonksiyon\" yazmayan girdiler için)", functions,
+                            index=functions.index(suggested) if suggested in functions else 0)
     st.session_state.setdefault("hy_cases", DEFAULT_CASES)
     text = st.text_area("Test girdileri (JSON). LLM önerdiyse burada görünür; düzenleyebilirsiniz", key="hy_cases",
                         height=200)
-    st.caption('Her kayıt: {"etiket": ..., "args": [...], "kwargs": {...}}. Doğru çıktıyı bilmeniz gerekmez: '
-               "Önce sürümü referanstır. Yalnızca bu girdiler için karşılaştırılır.")
+    st.caption('Her kayıt: {"etiket": ..., "fonksiyon": "ad", "args": [...], "kwargs": {...}}. Doğru çıktıyı bilmeniz '
+               "gerekmez: Önce sürümü referanstır. Değişen HER fonksiyon için en az bir girdi gerekir. Dönüş değeri, "
+               "ekrana yazılanlar (print), hata ve girdi listesinin yerinde değişmesi birebir karşılaştırılır.")
     cases, error = hybrid.parse_cases(text)
+    if not error:
+        _coverage_box(snapshot, after, cases, function)
     mode, consent = _hybrid_mode_and_consent()
     repeats = st.slider("Tekrar sayısı", 3, 40, 10, key="hy_repeats")
     if error:
@@ -906,7 +1020,7 @@ def _hybrid_measure(snapshot: str, after: str, review) -> None:
     if st.button("Önerilen düzeltmeyi ölçerek doğrula", key="hy_bench_run", disabled=not consent or bool(error)):
         with st.spinner(SPINNER_TEXT):
             result = benchmark(snapshot, after, function, cases[0]["args"], cases[0]["kwargs"],
-                               BenchmarkOptions(repeats=repeats, mode=mode), cases=cases)
+                               BenchmarkOptions(repeats=repeats, mode=mode, timeout=60), cases=cases)
         st.session_state["hy_bench"] = {"result": result, "sources": (snapshot, after, function), "mode": mode}
         st.rerun()
     stored = st.session_state.get("hy_bench")
@@ -916,21 +1030,32 @@ def _hybrid_measure(snapshot: str, after: str, review) -> None:
         st.warning("Kod ya da Sonra sürümü değişti; önceki ölçüm geçersiz. Yeniden ölçün.")
 
 
-def _hybrid_verdict(code: str, after: str, cards: list[dict], check: dict | None, dyn: dict | None) -> None:
-    st.markdown("#### 6) Sonuç kartı")
+def _hybrid_verdict(code: str, after: str, cards: list[dict], check: dict | None, dyn: dict | None,
+                    review=None) -> None:
+    st.markdown("#### 5) Karar kartı")
     allow_change = st.checkbox("Bu düzeltmenin çıktıyı değiştirmesi beklenir (ör. md5 yerine sha256 gibi güvenlik düzeltmeleri)",
                                key="hy_allow_change")
-    verdict = hybrid.overall_verdict(check, dyn, allow_change)
+    perf = hybrid.performance_functions(code, [c["finding"] for c in cards])
+    verdict = hybrid.overall_verdict(check, dyn, allow_change, sources=(code, after) if after.strip() else None,
+                                     perf_functions=perf)
     box = {"kabul": st.success, "kabul_uyari": st.warning, "kismen": st.info, "bekliyor": st.info,
            "red": st.error}[verdict["decision"]]
     box(verdict["title"])
-    st.table(pd.DataFrame([{"Katman": r["layer"], "Durum": BADGE_MARK[r["status"]], "Sonuç": r["text"]}
-                           for r in verdict["rows"]]).set_index("Katman"))
+    rows = [{"Katman": r["layer"], "Durum": BADGE_MARK[r["status"]], "Sonuç": r["text"]} for r in verdict["rows"]]
+    if review:
+        summary = hybrid.verdict_summary(cards, sum(bool(x.strip()) for x in code.splitlines()))
+        rows.append({"Katman": "LLM doğrulama", "Durum": BADGE_MARK["ok"],
+                     "Sonuç": f"{summary['onayla']} onaylandı · {summary['baglama_bagli']} bağlama bağlı · "
+                              f"{summary['yanlis_pozitif']} elendi · {len(review['data'].get('ek_sorunlar') or [])} ek sorun "
+                              "(doğrulanmadı)"})
+    st.table(pd.DataFrame(rows).set_index("Katman"))
     st.caption("Kabul, yalnızca denenen girdiler için geçerlidir; kodun her durumda aynı işi yaptığının kanıtı değildir. "
-               "Güvenlik ya da kalite iyileşmesi statik kurallara dayanan bir göstergedir.")
-    review = st.session_state.get("hy_review") or {}
-    meta = {"source": review.get("source"), "model": review.get("model")}
-    report = hybrid.hybrid_report(code, after or None, cards, check, dyn, meta)
+               "Güvenlik ya da kalite iyileşmesi statik kurallara dayanan bir göstergedir; LLM'in eleme ve ek sorun "
+               "kararları görüştür, kanıt değildir.")
+    stored = st.session_state.get("hy_review") or {}
+    meta = {"source": stored.get("source"), "model": stored.get("model")}
+    extras = (review or {}).get("data", {}).get("ek_sorunlar")
+    report = hybrid.hybrid_report(code, after or None, cards, check, dyn, meta, extras)
     st.download_button("Hibrit raporu indir (JSON)", json.dumps(report, indent=2, ensure_ascii=False),
                        file_name="hybrid_report.json")
 
@@ -945,29 +1070,35 @@ def _hybrid_dynamic_runner(snapshot: str):
     repeats = st.session_state.get("hy_repeats", 10)
 
     def run(after: str) -> dict | None:
-        if hybrid.measurability(snapshot, after)["reason"] or function not in hybrid.common_functions(snapshot, after):
+        common = hybrid.common_functions(snapshot, after)
+        needed = {c.get("function") or function for c in cases}
+        if hybrid.measurability(snapshot, after)["reason"] or not needed <= set(common):
             return None
         result = benchmark(snapshot, after, function, cases[0]["args"], cases[0]["kwargs"],
-                           BenchmarkOptions(repeats=repeats, mode=mode), cases=cases)
+                           BenchmarkOptions(repeats=repeats, mode=mode, timeout=60), cases=cases)
         return {"result": result, "sources": (snapshot, after, function), "mode": mode}
     return run
 
 
 def _hybrid_refine(snapshot: str, after: str, findings: list[dict], settings: llm.Settings, ready: bool,
                    check: dict | None) -> None:
-    st.markdown("#### 7) Reddedildiyse: LLM'e geri bildirim ver, yeniden düzelttir")
+    """Karar kartının devamı. `findings`: LLM'in elemediği bulgular (elenenler yeniden düzelttirilmez)."""
+    st.markdown("##### Reddedildiyse: LLM'e geri bildirim ver, yeniden düzelttir")
     st.caption("Doğrulamanın bulduğu somut nedenler (kalan bulgular, farklı çıktılar, yavaşlık) LLM'e geri verilir; "
                "yeni öneri yine statik (ve ölçüm yapıldıysa dinamik) olarak doğrulanır. Her tur 1 LLM isteği harcar.")
     if not after.strip() or check is None:
         st.info("Önce bir Sonra sürümü gerekir.")
         return
+    if not findings:
+        st.info("Düzeltilecek (LLM'in elemediği) bulgu kalmadı.")
+        return
     runner = _hybrid_dynamic_runner(snapshot)
     st.caption("Dinamik doğrulama: " + ("her turda aynı girdilerle yeniden ölçülür." if runner else
-               "kapalı (önce 5. adımda bir kez ölçerseniz döngü her adayı da çalıştırarak doğrular)."))
+               "kapalı (önce 4. bölümde bir kez ölçerseniz döngü her adayı da çalıştırarak doğrular)."))
     rounds = st.slider("En çok kaç tur denensin?", 1, hybrid.MAX_REFINE_ROUNDS, hybrid.MAX_REFINE_ROUNDS, key="hy_rounds")
     if not st.button("Kabul edilene kadar geri bildirimle düzelttir", key="hy_refine_btn", disabled=not ready):
         if not ready:
-            st.caption("API anahtarı ve gönderim onayı gerekir (3. adım).")
+            st.caption("API anahtarı ve gönderim onayı gerekir (2. bölüm).")
         return
     with st.spinner("LLM geri bildirimle düzeltiyor ve doğrulanıyor..."):
         outcome = hybrid.auto_refine(snapshot, after, findings, settings, run_dynamic=runner, rounds=rounds,
@@ -990,28 +1121,23 @@ def _hybrid_refine_history() -> None:
                                 "Hata": h.get("hata", "")} for h in history]).set_index("Tur"))
 
 
-def _hybrid_second_opinion(snapshot: str, findings: list[dict], settings: llm.Settings, live: bool, ready: bool) -> None:
-    with st.expander("LLM ikinci görüş: kuralların kaçırmış olabileceği adaylar (ana akışın dışında)"):
-        if ready:
-            _llm_candidates_section(snapshot, findings, settings, live)
-        else:
-            st.caption("Bu bölüm için API anahtarı ve yukarıdaki gönderim onayı gerekir. Adaylar kesin bulgu sayılmaz.")
-
-
 def _hybrid_tab() -> None:
     pending = st.session_state.pop("hy_pending_after", None)  # widget çizilmeden önce yazılabilir
     if pending is not None:
         st.session_state["hy_after"], st.session_state["hy_after_for"] = pending
-    for key in ("hy_after", "hy_cases"):  # Streamlit, çizilmeyen bir turda widget durumunu siler; burada korunur
+    for key in HYBRID_KEPT_STATE:  # Streamlit, çizilmeyen bir turda widget durumunu siler; burada korunur
         if key in st.session_state:
             st.session_state[key] = st.session_state[key]
     _hybrid_intro()
-    settings, live = _llm_connection()
-    snapshot, result = _hybrid_analysis()
+    snapshot, result = _hybrid_analysis()                                   # 1) AST bulguları
     if result is None:
         return
+    _ast_section(snapshot, result)
     findings = result.issues
+    st.markdown("#### 2) LLM doğrulama ve açıklama")                        # 2) LLM doğrula / ele / açıkla
+    settings, live = _llm_connection()
     review = _llm_fresh("hy_review", snapshot)
+    ready = _hybrid_llm_step(snapshot, findings, settings, live, review)
     st.session_state.setdefault("hy_after", "")
     after = st.session_state["hy_after"]
     check = llm.verify_fix(snapshot, after) if after.strip() else None
@@ -1019,17 +1145,16 @@ def _hybrid_tab() -> None:
     after_findings = hybrid.after_findings_of(after) if check else None
     cards = hybrid.build_cards(findings, review["data"]["aciklamalar"] if review else None, after_findings, dyn,
                                llm_ran=review is not None)
-    st.markdown("#### 2) Statik sonuç ve bulgu kartları")
-    _summary_metrics(result)
-    _code_viewer(snapshot, findings)
+    if review:
+        _verdict_overview(cards, result)
     _hybrid_cards(cards)
-    ready = _hybrid_llm_step(snapshot, findings, settings, live, review)
-    _hybrid_compare(snapshot, after, check, review)
-    _hybrid_measure(snapshot, after, review)
-    _hybrid_verdict(snapshot, after, cards, check, dyn)
-    _hybrid_refine(snapshot, after, findings, settings, ready, check)
+    if review:
+        _hybrid_extra_issues(review)
+    _hybrid_compare(snapshot, after, check, review)                         # 3) Önerileri uygula: Önce | Sonra
+    _hybrid_measure(snapshot, after, review)                                # 4) Dinamik analiz
+    _hybrid_verdict(snapshot, after, cards, check, dyn, review)             # 5) Karar kartı
+    _hybrid_refine(snapshot, after, hybrid.active_findings(cards), settings, ready, check)
     _hybrid_refine_history()
-    _hybrid_second_opinion(snapshot, findings, settings, live, ready)
 
 
 def _guide_tab() -> None:
@@ -1044,7 +1169,7 @@ def _guide_text() -> None:
     st.markdown("#### Üç katman, tek zincir")
     st.table(pd.DataFrame([
         {"Katman": "Statik (AST)", "Rolü": "Bulur ve doğrular", "Kanıt gücü": "Gösterge: kural tabanlı, kodu çalıştırmaz"},
-        {"Katman": "LLM", "Rolü": "Anlar, açıklar, düzeltme ve test girdisi önerir",
+        {"Katman": "LLM", "Rolü": "Bulguyu doğrular/eler, koda özel açıklar, kaçırılanı ekler, düzeltme ve test girdisi önerir",
          "Kanıt gücü": "Kanıt değil: her çıktısı doğrulanır"},
         {"Katman": "Dinamik (çalıştırma)", "Rolü": "Davranışı ve hızı ölçer", "Kanıt gücü": "Ölçüm: yalnızca denenen girdiler için"},
     ]).set_index("Katman"))
@@ -1069,10 +1194,10 @@ def _guide_text() -> None:
     with st.expander("Önerilen canlı gösterim akışı"):
         st.markdown(
             "1. Hazır örnek kodla **Kodu analiz et**: statik bulgular ve rozetler.\n"
-            "2. **Hibrit incelemeyi çalıştır**: LLM açıklar, düzeltir, test girdisi önerir (kota: 1 istek).\n"
+            "2. **Hibrit incelemeyi çalıştır**: LLM her bulguyu doğrular ya da eler, açıklar, düzeltir, test girdisi önerir (kota: 1 istek).\n"
             "3. **Önce | Sonra** statik doğrulamasını göster; Sonra kutusunu düzenleyip her şeyin yeniden hesaplandığını göster.\n"
             "4. **Ölçerek doğrula**: girdi başına çıktı aynı mı, hız oranı.\n"
-            "5. **Sonuç kartı**: üç katmanın tek kararı. İnternet kesilirse son başarılı yanıt *kayıtlı yanıt* uyarısıyla gelir.")
+            "5. **Karar kartı**: üç katmanın tek kararı. İnternet kesilirse son başarılı yanıt *kayıtlı yanıt* uyarısıyla gelir.")
 
 
 def _evaluation_group() -> None:

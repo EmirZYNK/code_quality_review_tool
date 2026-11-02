@@ -28,20 +28,43 @@ from pathlib import Path
 IMAGE = "python:3.12-alpine"
 
 RUNNER = r'''
-import copy, json, pathlib, statistics, sys, time, tracemalloc
+import collections.abc, contextlib, copy, io, itertools, json, pathlib, statistics, sys, time, tracemalloc
 
 WORK = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '/work')
 cfg = json.loads((WORK / 'config.json').read_text())
 CASES = cfg.get('cases') or [{'label': 'girdi 1', 'args': cfg['args'], 'kwargs': cfg['kwargs']}]
+DEFAULT_FUNCTION = cfg['function']
+ITER_LIMIT = 10000   # generator/yineleyici sonuçları en çok bu kadar eleman okunarak karşılaştırılır
 ns_before = {'__name__': 'benchmark_before'}
 ns_after = {'__name__': 'benchmark_after'}
 
 
+class Null:
+    """Ölçüm turlarında fonksiyonun yazdıkları çöpe gider (zamanı ve belleği bozmasın)."""
+
+    def write(self, text):
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+def silent():
+    return contextlib.redirect_stdout(Null()), contextlib.redirect_stderr(Null())
+
+
 def load(path, namespace):
-    exec(compile(pathlib.Path(path).read_text(), path, 'exec'), namespace)
-    fn = namespace[cfg['function']]
+    """Modülü çalıştırır; yüklenirken yazdırdığı çıktıyı ve hatayı döndürür (davranışın parçasıdır)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        exec(compile(pathlib.Path(path).read_text(), path, 'exec'), namespace)
+    return out.getvalue(), err.getvalue()
+
+
+def get_function(namespace, name):
+    fn = namespace.get(name)
     if not callable(fn):
-        raise ValueError('Hedef çağrılabilir değil')
+        raise ValueError("'" + name + "' çağrılabilir bir fonksiyon olarak bulunamadı")
     return fn
 
 
@@ -49,46 +72,101 @@ def fresh_args(case):
     return copy.deepcopy(case['args']), copy.deepcopy(case['kwargs'])
 
 
+def materialize(value):
+    """Generator/yineleyici döndüren fonksiyonlar nesne kimliğiyle değil, ürettikleri değerlerle karşılaştırılır."""
+    if isinstance(value, collections.abc.Iterator):
+        items = list(itertools.islice(value, ITER_LIMIT + 1))
+        return ('yineleyici', items[:ITER_LIMIT], len(items) > ITER_LIMIT)
+    return value
+
+
+def consume(value):
+    if isinstance(value, collections.abc.Iterator):
+        for _ in itertools.islice(value, ITER_LIMIT):
+            pass
+
+
 def outcome(fn, case):
+    """Tek çağrının TÜM gözlenebilir davranışı: dönüş/hata, stdout, stderr ve girdilerin çağrı sonrası hali."""
     args, kwargs = fresh_args(case)
+    out, err = io.StringIO(), io.StringIO()
     try:
-        return ('ok', fn(*args, **kwargs))
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = ('ok', materialize(fn(*args, **kwargs)))
     except Exception as exc:
-        return ('error', type(exc).__name__, str(exc))
+        status = ('error', type(exc).__name__, str(exc))
+    return {'status': status, 'out': out.getvalue(), 'err': err.getvalue(), 'args': args, 'kwargs': kwargs}
 
 
 def measure_time(fn, case):
-    for _ in range(3):
-        args, kwargs = fresh_args(case)
-        fn(*args, **kwargs)
-    samples = []
-    for _ in range(cfg['repeats']):
-        args, kwargs = fresh_args(case)
-        start = time.perf_counter_ns()
-        fn(*args, **kwargs)
-        samples.append((time.perf_counter_ns() - start) / 1e6)
+    quiet = silent()
+    with quiet[0], quiet[1]:
+        for _ in range(3):
+            args, kwargs = fresh_args(case)
+            consume(fn(*args, **kwargs))
+        samples = []
+        for _ in range(cfg['repeats']):
+            args, kwargs = fresh_args(case)
+            start = time.perf_counter_ns()
+            consume(fn(*args, **kwargs))
+            samples.append((time.perf_counter_ns() - start) / 1e6)
     return {'median_ms': statistics.median(samples), 'min_ms': min(samples)}
 
 
 def measure_memory(fn, case):
     peaks = []
-    for _ in range(cfg['memory_repeats']):
-        args, kwargs = fresh_args(case)
-        tracemalloc.start()
-        try:
-            fn(*args, **kwargs)
-            peaks.append(tracemalloc.get_traced_memory()[1])
-        finally:
-            tracemalloc.stop()
+    quiet = silent()
+    with quiet[0], quiet[1]:
+        for _ in range(cfg['memory_repeats']):
+            args, kwargs = fresh_args(case)
+            tracemalloc.start()
+            try:
+                consume(fn(*args, **kwargs))
+                peaks.append(tracemalloc.get_traced_memory()[1])
+            finally:
+                tracemalloc.stop()
     return {'median_peak_bytes': statistics.median(peaks)}
 
 
-def compare_outcomes(f, g):
+def same_value(a, b):
+    try:
+        if a == b:
+            return True
+    except Exception:
+        pass
+    return repr(a) == repr(b)   # NaN gibi kendine eşit olmayan ama aynı görünen değerler için
+
+
+def differences(a, b):
+    reasons = []
+    if not same_value(a['status'], b['status']):
+        reasons.append('dönüş değeri ya da hata')
+    if a['out'] != b['out']:
+        reasons.append('ekrana yazdırılan çıktı (print)')
+    if a['err'] != b['err']:
+        reasons.append('stderr çıktısı')
+    if not same_value((a['args'], a['kwargs']), (b['args'], b['kwargs'])):
+        reasons.append('girdi nesnelerinin yerinde değiştirilmesi')
+    return reasons
+
+
+def describe(result, case):
+    text = repr(result['status'])[:260]
+    if result['out']:
+        text += ' | print: ' + repr(result['out'])[:80]
+    if not same_value((result['args'], result['kwargs']), (case['args'], case['kwargs'])):
+        text += ' | girdi sonrası: ' + repr(result['args'])[:80]
+    return text[:400]
+
+
+def compare_outcomes(functions_before, functions_after):
     rows = []
     for case in CASES:
-        a, b = outcome(f, case), outcome(g, case)
-        rows.append({'label': case['label'], 'same': a == b, 'kind': a[0],
-                     'before_outcome': repr(a)[:400], 'after_outcome': repr(b)[:400]})
+        name = case.get('function') or DEFAULT_FUNCTION
+        a, b = outcome(functions_before[name], case), outcome(functions_after[name], case)
+        reasons = differences(a, b)
+        rows.append({'label': case['label'], 'function': name, 'same': not reasons, 'kind': a['status'][0],
+                     'diff': reasons, 'before_outcome': describe(a, case), 'after_outcome': describe(b, case)})
     return rows
 
 
@@ -97,20 +175,37 @@ def fail(message, rows, **extra):
     raise SystemExit(0)
 
 
+def per_function(timed):
+    result = {}
+    for name in sorted({r['function'] for r in timed}):
+        mine = [r for r in timed if r['function'] == name]
+        top = max(mine, key=lambda r: r['before']['median_ms'])
+        result[name] = {'case': top['label'], 'before': top['before'], 'after': top['after'], 'cases': len(mine)}
+    return result
+
+
 try:
-    f = load(str(WORK / 'before.py'), ns_before)
-    g = load(str(WORK / 'after.py'), ns_after)
-    rows = compare_outcomes(f, g)
+    load_before = load(str(WORK / 'before.py'), ns_before)
+    load_after = load(str(WORK / 'after.py'), ns_after)
+    names = sorted({c.get('function') or DEFAULT_FUNCTION for c in CASES})
+    functions_before = {n: get_function(ns_before, n) for n in names}
+    functions_after = {n: get_function(ns_after, n) for n in names}
+    rows = compare_outcomes(functions_before, functions_after)
+    if load_before != load_after:
+        rows.insert(0, {'label': '(modül yüklenirken)', 'function': '', 'same': False, 'kind': 'load', 'timed': False,
+                        'diff': ['modül yüklenirken yazdırılan çıktı'],
+                        'before_outcome': repr(load_before)[:400], 'after_outcome': repr(load_after)[:400]})
     different = [r for r in rows if not r['same']]
     if different:
-        fail('Önce ve Sonra sürümlerinin çıktısı ya da hatası farklı', rows,
+        fail('Önce ve Sonra sürümlerinin çıktısı ya da hatası farklı (' + ', '.join(different[0]['diff']) + ')', rows,
              before_outcome=different[0]['before_outcome'], after_outcome=different[0]['after_outcome'])
-    by_label = {c['label']: c for c in CASES}
+    by_label = {(c['label'], c.get('function') or DEFAULT_FUNCTION): c for c in CASES}
     for row in rows:
         row['timed'] = row['kind'] == 'ok'
         if row['timed']:
-            case = by_label[row['label']]
-            for label, fn in (('before', f), ('after', g)):
+            case = by_label[(row['label'], row['function'])]
+            for label, fns in (('before', functions_before), ('after', functions_after)):
+                fn = fns[row['function']]
                 row[label] = {**measure_time(fn, case), **measure_memory(fn, case)}
     timed = [r for r in rows if r['timed']]
     if not timed:
@@ -118,8 +213,8 @@ try:
     headline = max(timed, key=lambda r: r['before']['median_ms'])
     print(json.dumps({'ok': True, 'repeats': cfg['repeats'], 'memory_repeats': cfg['memory_repeats'],
                       'equivalent_for_test_input': True, 'cases_total': len(rows), 'cases_same': len(rows),
-                      'cases': rows, 'headline_case': headline['label'],
-                      'before': headline['before'], 'after': headline['after']}))
+                      'cases': rows, 'headline_case': headline['label'], 'functions_tested': names,
+                      'by_function': per_function(timed), 'before': headline['before'], 'after': headline['after']}))
 except SystemExit:
     raise
 except Exception as exc:
@@ -199,7 +294,7 @@ def _validate(before: str, after: str, function: str, args, kwargs) -> str | Non
     return None
 
 
-MAX_CASES = 8
+MAX_CASES = 16
 MAX_CASE_CHARS = 20_000
 
 
@@ -212,12 +307,20 @@ def _validate_cases(cases) -> str | None:
             return "Her test girdisi {label, args (dizi), kwargs (nesne)} biçiminde olmalıdır."
         if len(json.dumps(case)) > MAX_CASE_CHARS:
             return "Bir test girdisi çok büyük (JSON olarak en fazla 20 000 karakter)."
+        name = case.get("function")
+        if name is not None and not (isinstance(name, str) and name.isidentifier() and not name.startswith("_")):
+            return "Test girdisindeki fonksiyon adı genel (alt çizgiyle başlamayan) bir ad olmalı."
     return None
 
 
 def _normalize_cases(cases: list[dict]) -> list[dict]:
-    return [{"label": str(c.get("label") or f"girdi {i}")[:40], "args": c["args"], "kwargs": c["kwargs"]}
-            for i, c in enumerate(cases, 1)]
+    normalized = []
+    for i, c in enumerate(cases, 1):
+        record = {"label": str(c.get("label") or f"girdi {i}")[:40], "args": c["args"], "kwargs": c["kwargs"]}
+        if c.get("function"):
+            record["function"] = c["function"]
+        normalized.append(record)
+    return normalized
 
 
 def _docker_command(folder: Path, name: str) -> list[str]:

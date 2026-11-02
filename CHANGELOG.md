@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased — Adım 3 ve 4: sıfır toleranslı doğrulama, çok fonksiyonlu ve tam davranışlı dinamik analiz
+
+### Changed
+- **Sıfır tolerans:** `llm.verify_fix` artık düşük önemli bile olsa yeni bir bulgu doğuran düzeltmeyi reddeder ("Yeni bulgu eklenmedi").
+  Tek istisna olasılıksal YZ göstergeleri (bulgu sayılmaz; yalnızca bilgi olarak yazılır). Eski "düşük önemde yeni bulgu kabul edilebilir" kuralı kalktı.
+- **Çıktı eşitliği yalnızca dönüş değerine bakmıyor.** Ölçüm betiği (`benchmark.RUNNER`) artık şunları birebir karşılaştırır:
+  dönüş değeri ya da hata, ekrana yazılanlar (`print`), stderr, girdi nesnelerinin çağrı sonrası hali (yerinde değiştirme) ve
+  modül yüklenirken yazdırılanlar. Farkın nedeni ekranda adıyla yazılır.
+- **Generator/yineleyici döndüren fonksiyonlar** artık nesne kimliğiyle değil ürettikleri değerlerle karşılaştırılır
+  (aynı davranan generator yanlış yere reddedilmez). `NaN` gibi kendine eşit olmayan ama aynı görünen değerler eşit sayılır.
+- Süre/bellek turlarında fonksiyonun yazdıkları çöpe gider; yineleyici sonuçlar süre ölçümünde de tüketilir.
+- `MAX_CASES` 8 -> 16.
+
+### Added
+- **Çok fonksiyonlu ölçüm:** test girdisi kaydına isteğe bağlı `"fonksiyon"` alanı. Her fonksiyon kendi girdileriyle sınanır;
+  sonuçta `by_function` (fonksiyon başına en yavaş girdi) ve `functions_tested` döner. LLM istemi, değiştirdiği her fonksiyon için girdi vermesini ister.
+- **Test kapsamı** (`hybrid.changed_units`, `hybrid.test_coverage`): yalnızca gerçekten değişen (AST'si farklı; yorum/boşluk sayılmaz) genel
+  fonksiyonlar sayılır. Değişip de test girdisi olmayan fonksiyon varsa karar **"kısmen doğrulandı"** olur, "kabul" olamaz.
+  Sınıf ve özel fonksiyon değişiklikleri "doğrudan sınanamadı" uyarısı verir.
+- **Hız kanıtı** (`hybrid.performance_functions`, `unproven_speedups`): statik kural bir Performans bulgusunu çözülmüş saydığı ama o fonksiyonda ölçülebilir
+  hız kazancı olmayan durumlar ("kural kandırıldı", ör. iç içe döngüyü comprehension'a taşımak) uyarı verir ve yeniden düzelttirme döngüsüne geri bildirim olarak gider.
+- **Fonksiyon başına hız tablosu**; genel hızlanma tek bir fonksiyondaki yavaşlamayı artık gizlemez (0,05 ms altı farklar gürültü sayılır).
+- `tests/test_step34.py` (25 test); toplam 229.
+
+## Unreleased — Adım 1 ve 2: tek akışlı sayfa, LLM doğrulama ve eleme
+
+### Added
+- **LLM doğrulama ve eleme** (`hybrid.review_and_fix`, hâlâ tek LLM çağrısı): her AST bulgusu için karar `onayla` / `yanlis_pozitif` /
+  `baglama_bagli` ve gerekçe. Bilinmeyen karar değeri ya da gerekçesiz eleme/koşul atılır (açıklama yine geçerliyse korunur).
+  Elenen bulgu **silinmez**: kartta gri ve gerekçeli kalır, yüksek önemli bir bulgu elenirse ayrıca uyarı çıkar.
+- **AST'nin kaçırdığı anlamsal sorunlar** (`ek_sorunlar`): satır ve alıntı gerçek koda uymalıdır (uymazsa atılır; yanlış sayılmış satır
+  alıntıya göre düzeltilir). Aynı kategoride AST bulgusu varsa *AST ile örtüşüyor*, yoksa *doğrulanmadı (öneri)* etiketi; skora girmez.
+- `hybrid.verdict_summary`: karar sayıları ve elemenin skora etkisi (AST skoru değişmez, "LLM elemesinden sonra" skor `metrics.quality_score`
+  ile aynı formülle ayrıca gösterilir). `hybrid.active_findings`: elenmeyen bulgular (yeniden düzelttirme yalnızca bunlar için çalışır).
+- `llm.clean_candidates`: aday doğrulaması ortak fonksiyona çıkarıldı (eski ikinci görüş ve hibrit çağrı aynısını kullanır).
+- Hibrit rapor (JSON): `llm_review` (karar özeti, ek sorunlar) ve bulgu başına `llm_verdict`.
+
+### Changed
+- Hibrit sekme **beş bölüme** indi: 1) Statik analiz, 2) LLM doğrulama ve açıklama, 3) Önerileri uygula (Önce | Sonra), 4) Dinamik analiz,
+  5) Karar kartı (yeniden düzelttirme ve rapor indirme dahil). Bağlantı ayarları 2. bölüme taşındı.
+- LLM istemi dört iş istiyor (doğrula/ele, kaçırılanı ekle, düzelt, test girdisi); elenen bulguya koda dokunmaması söyleniyor.
+  İstem değiştiği için eski `.llm_cache` yanıtları yeni istemle eşleşmez; bir kez canlı çağrı gerekir.
+- LLM kodda değişiklik önermediyse (kod aynı) bu, "bulgular azalmadı" diye reddedilmiş sahte bir düzeltme yerine açıkça söylenir.
+- Düğme metni: "Hibrit incelemeyi çalıştır (LLM doğrular, açıklar, düzeltir)".
+
+### Removed
+- Hibrit sekmeden ayrı "LLM ikinci görüş" bölümü (ana çağrı artık kaçırılanları da veriyor, ek istek harcamıyor). `llm.suggest_candidates` duruyor.
+
+### Tests
+- 24 yeni test (`VerdictReviewTests`, `VerdictCardTests`, arayüz duman testleri: beş bölümün sırası, gri eleme, ek sorun tablosu); toplam 204.
+  Gerçek Streamlit, gerçek Gemini ve Docker bu ortamda çalıştırılmadı.
+
 ## Unreleased — Adım 6: Hibrit sistem
 
 ### Added

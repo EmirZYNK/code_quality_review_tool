@@ -2,7 +2,8 @@
 
 Zincir: LLM önerir -> AST doğrular -> çalıştırma ölçer. Bu modül üç katmanın sonucunu birleştirir:
 
-  * `review_and_fix`: TEK LLM çağrısı (açıklama + düzeltme + test girdisi önerisi); çıktının tamamı doğrulanır.
+  * `review_and_fix`: TEK LLM çağrısı (bulgu doğrulama/eleme + açıklama + AST'nin kaçırdıkları + düzeltme + test
+    girdisi önerisi); çıktının tamamı doğrulanır. Elenen bulgu silinmez, gerekçesiyle gösterilir.
   * `build_cards`: her bulgu için Statik / LLM / Dinamik rozetleri (hangi katman neyi doğruladı).
   * `overall_verdict`: statik doğrulama + çıktı eşitliği + hız birlikte tek karar.
 
@@ -21,9 +22,18 @@ from . import llm
 from .benchmark import MAX_CASE_CHARS, MAX_CASES, summarize
 from .config import Config
 from .engine import analyze
+from .metrics import quality_score
+from .models import Finding
 from .rules import RULES
 
 HYBRID_TASK = "hybrid"
+
+# LLM'in her AST bulgusu için verebileceği kararlar. Elenen (yanlış pozitif) bulgu silinmez; gerekçesiyle gösterilir.
+VERDICTS = ("onayla", "yanlis_pozitif", "baglama_bagli")
+VERDICT_TR = {"onayla": "Onaylandı", "yanlis_pozitif": "Elendi (yanlış pozitif)", "baglama_bagli": "Bağlama bağlı"}
+MIN_REASON_CHARS = 5   # gerekçesiz karar kabul edilmez
+MAX_EXTRA_ISSUES = 5   # AST'nin kaçırdığı, LLM'in eklediği anlamsal sorunların üst sınırı
+RISKY_SEVERITIES = ("critical", "high")  # bu önemdeki bir bulgu elenirse arayüz ayrıca uyarır
 
 
 # --------------------------------------------------------------------------- fonksiyonlar ve test girdileri
@@ -66,6 +76,11 @@ def _clean_case(record, index: int) -> dict | None:
         return None
     label = str(record.get("etiket") or record.get("label") or f"girdi {index}")[:40]
     case = {"label": label, "args": args, "kwargs": kwargs}
+    function = record.get("fonksiyon") or record.get("function")
+    if function is not None:
+        if not (isinstance(function, str) and function.isidentifier() and not function.startswith("_")):
+            return None
+        case["function"] = function
     try:
         size = len(json.dumps(case, ensure_ascii=False))
     except (TypeError, ValueError):
@@ -91,7 +106,8 @@ def sanitize_cases(raw) -> tuple[list[dict], int]:
 
 def cases_to_text(cases: list[dict]) -> str:
     """Test girdilerini arayüzdeki düzenlenebilir JSON metnine çevirir."""
-    shown = [{"etiket": c["label"], "args": c["args"], "kwargs": c["kwargs"]} for c in cases]
+    shown = [{"etiket": c["label"], **({"fonksiyon": c["function"]} if c.get("function") else {}),
+              "args": c["args"], "kwargs": c["kwargs"]} for c in cases]
     return json.dumps(shown, ensure_ascii=False, indent=1)
 
 
@@ -108,6 +124,64 @@ def parse_cases(text: str) -> tuple[list[dict], str | None]:
     return cases, None
 
 
+# --------------------------------------------------------------------------- değişen kod ve test kapsamı
+
+def _units(code: str) -> dict[str, str] | None:
+    """Üst düzey fonksiyon ve sınıfların ad -> AST dökümü (modül düzeyi kodu ölçüm betiği ayrıca karşılaştırır)."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    units: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            units[node.name] = ast.dump(node, include_attributes=False)
+    return units
+
+
+def changed_units(before: str, after: str) -> dict:
+    """Önce ve Sonra arasında GERÇEKTEN değişen birimler (yorum ve boşluk değişikliği sayılmaz).
+
+    Döndürür: {"public": [...ölçülebilir genel fonksiyonlar], "indirect": [...özel fonksiyon/sınıf/modül kodu],
+    "added": [...yalnızca Sonra'da olanlar]}. Yalnızca "public" fonksiyonlar doğrudan çağrılıp sınanabilir.
+    """
+    old, new = _units(before), _units(after)
+    if old is None or new is None:
+        return {"public": [], "indirect": [], "added": []}
+    callable_names = set(top_level_functions(before)) & set(top_level_functions(after))
+    public, indirect = [], []
+    for name, dump in old.items():
+        if name in new and new[name] != dump:
+            (public if name in callable_names else indirect).append(name)
+    added = [n for n in new if n not in old]
+    return {"public": public, "indirect": indirect, "added": added}
+
+
+def test_coverage(before: str, after: str, cases: list[dict], default_function: str | None = None) -> dict:
+    """Değişen genel fonksiyonlardan hangileri en az bir test girdisiyle sınanıyor?
+
+    `cases` içinde `function` yazmayan girdiler `default_function` için sayılır.
+    Döndürür: {"changed", "tested", "untested", "indirect", "complete"}.
+    """
+    changed = changed_units(before, after)
+    tested_names = {c.get("function") or default_function for c in cases} - {None}
+    tested = [n for n in changed["public"] if n in tested_names]
+    untested = [n for n in changed["public"] if n not in tested_names]
+    return {"changed": changed["public"], "tested": tested, "untested": untested,
+            "indirect": changed["indirect"], "complete": not untested}
+
+
+def coverage_text(coverage: dict) -> str:
+    """Kapsamı tek cümlede anlatır (arayüz ve karar kartı için)."""
+    total = len(coverage["changed"])
+    if not total:
+        return "Doğrudan sınanacak değişmiş genel fonksiyon yok."
+    text = f"Değişen {total} genel fonksiyonun {len(coverage['tested'])}'i sınandı"
+    if coverage["untested"]:
+        text += f"; sınanmayan: {', '.join(coverage['untested'])}"
+    return text + "."
+
+
 # --------------------------------------------------------------------------- tek LLM çağrısı
 
 def _rule_guidance(findings: list[dict]) -> list[dict]:
@@ -115,46 +189,91 @@ def _rule_guidance(findings: list[dict]) -> list[dict]:
     items = []
     for f in findings:
         meta = RULES.get(f["rule"])
-        items.append({"rule": f["rule"], "line": f["line"], "message": f["message"],
-                      "kural_onerisi": meta.fix if meta else ""})
+        items.append({"rule": f["rule"], "line": f["line"], "message": f["message"], "onem": f["severity"],
+                      "guven": f["confidence"], "kural_onerisi": meta.fix if meta else ""})
     return items
 
 
 def _prompt(code: str, items: list[dict]) -> str:
     return (
         llm.BEHAVIOR_RULE +
-        "Aşağıda bir Python kodu ve statik analizin bulguları var. TEK yanıtta üç iş yap:\n"
-        "1) Her bulgu için bu koda özgü kısa açıklama ver (neden, duzeltme: 1-2 cümle).\n"
-        "2) Kodu bulguları giderecek şekilde düzelt. Kurallar: davranışı koru, fonksiyon adlarını ve imzalarını "
-        "değiştirme, her bulgunun 'kural_onerisi' alanına uy, gereksiz yeniden yazma yapma, yeni bağımlılık ekleme "
-        "(standart kütüphane serbest). Hız önemli: bulguyla doğrudan ilgili olmasa bile, çıktıyı BİREBİR (sıra ve "
-        "tekrarlar dahil) koruyarak yapılabiliyorsa belirgin algoritmik verimsizlikleri (iç içe döngüyle arama, "
-        "döngüde .count(), döngüde liste büyütme) en verimli yöntemle (set/dict/Counter, comprehension) yaz. "
-        "Düzeltmen yeni bir bulgu doğurmasın (ör. daha derin iç içe blok açma).\n"
-        "3) Düzeltmenin davranışını sınamak için test girdileri üret. 'fonksiyon': sınanacak üst düzey genel "
-        "fonksiyonun adı (uygun fonksiyon yoksa null). 'test_girdileri': en fazla 6 kayıt; bir sınır durumu "
-        "(boş/sıfır), tipik bir durum ve en az bir orta büyüklükte girdi (ör. 300 elemanlı liste) olsun ki hız farkı "
-        "görünsün. Girdiler JSON ile yazılabilmeli (args dizi, kwargs nesne). Doğru çıktıyı bilmen gerekmez. "
+        "Aşağıda bir Python kodu ve statik analizin (AST) bulguları var. TEK yanıtta dört iş yap:\n"
+        "1) DOĞRULA ya da ELE: her bulgu için bu kod bağlamında karar ver. 'karar' şunlardan biri olmalı: "
+        "'onayla' (bu kodda gerçek bir sorun), 'yanlis_pozitif' (kural tetiklendi ama bu kodda sorun değil), "
+        "'baglama_bagli' (girdiye ya da çalışma ortamına bağlı; neye bağlı olduğunu söyle). "
+        "'gerekce': kararın nedeni, koda özgü 1-2 cümle (zorunlu). 'neden': sorun neden önemli (1-2 cümle). "
+        "'duzeltme': bu kodda nasıl düzelir (1-2 cümle; yanlis_pozitif için boş bırakabilirsin). "
+        "Emin değilsen 'onayla' ya da 'baglama_bagli' de; özellikle güvenlik bulgularını yalnızca açık bir "
+        "gerekçen varsa ele (ör. eval yalnızca sabit bir metne uygulanıyorsa).\n"
+        "2) AST'nin KAÇIRDIĞI anlamsal sorunları 'ek_sorunlar' içinde ver (en fazla 5; emin değilsen verme; "
+        "AST bulgularını tekrar yazma). Örnekler: işini yansıtmayan yanıltıcı fonksiyon/değişken adı, yorumla kodun "
+        "çelişmesi, farklı yazılmış ama aynı işi yapan tekrar, gereksiz soyutlama, gereksiz savunmacı kod, mantık "
+        "hatası. Her kayıtta 'alinti' o satırdan BİREBİR kod parçası olmalı (koda uymayan kayıt atılır).\n"
+        "3) Kodu doğrulanan bulguları giderecek şekilde düzelt. Kurallar: davranışı koru, fonksiyon adlarını ve "
+        "imzalarını değiştirme, her bulgunun 'kural_onerisi' alanına uy, gereksiz yeniden yazma yapma, yeni bağımlılık "
+        "ekleme (standart kütüphane serbest). 'yanlis_pozitif' dediğin bulgu için koda DOKUNMA; hiçbir şeyi "
+        "düzeltmek gerekmiyorsa 'kod' alanına kodu aynen yaz. Hız önemli: bulguyla doğrudan ilgili olmasa bile, "
+        "çıktıyı BİREBİR (sıra ve tekrarlar dahil) koruyarak yapılabiliyorsa belirgin algoritmik verimsizlikleri "
+        "(iç içe döngüyle arama, döngüde .count(), döngüde liste büyütme) en verimli yöntemle (set/dict/Counter, "
+        "comprehension) yaz. Düzeltmen yeni bir bulgu doğurmasın (ör. daha derin iç içe blok açma).\n"
+        "4) Düzeltmenin davranışını sınamak için test girdileri üret. 'fonksiyon': en çok test edeceğin üst düzey genel "
+        "fonksiyonun adı (uygun fonksiyon yoksa null). 'test_girdileri': en fazla 16 kayıt. DEĞİŞTİRDİĞİN HER genel "
+        "üst düzey fonksiyon için, kaydın 'fonksiyon' alanına o fonksiyonun adını yazarak en az 2 girdi ver (bir sınır "
+        "durumu: boş/sıfır/negatif, bir tipik durum) ve verimsizliği düzelttiysen her fonksiyon için orta büyüklükte bir "
+        "girdi ekle (ör. 300 elemanlı liste) ki hız farkı görünsün. Test girdisi olmayan değişmiş fonksiyon 'kabul' "
+        "alamaz. Girdiler JSON ile yazılabilmeli (args dizi, kwargs nesne). Doğru çıktıyı bilmen gerekmez. "
         "Dosya, ağ ya da uzun süren girdi verme.\n"
-        'JSON biçimi: {"aciklamalar": [{"rule": "...", "line": 0, "neden": "...", "duzeltme": "..."}], '
+        'JSON biçimi: {"aciklamalar": [{"rule": "...", "line": 0, "karar": "onayla | yanlis_pozitif | baglama_bagli", '
+        '"gerekce": "...", "neden": "...", "duzeltme": "..."}], '
+        '"ek_sorunlar": [{"line": 0, "alinti": "o satırdan birebir kod parçası", "kategori": "'
+        + " | ".join(llm.CANDIDATE_CATEGORIES) + '", "baslik": "kısa", "neden": "1 cümle", "duzeltme": "1 cümle"}], '
         '"kod": "tam düzeltilmiş kod", "degisiklikler": ["kısa Türkçe madde"], "fonksiyon": "ad", '
-        '"test_girdileri": [{"etiket": "kısa ad", "args": [], "kwargs": {}}]}\n'
+        '"test_girdileri": [{"etiket": "kısa ad", "fonksiyon": "ad", "args": [], "kwargs": {}}]}\n'
         "Her bulgu için tam olarak bir açıklama kaydı ver; rule ve line değerlerini aynen kopyala.\n\n"
         f"BULGULAR:\n{json.dumps(items, ensure_ascii=False)}\n\nKOD:\n{code}"
     )
 
 
-def _clean_explanations(records, valid: set) -> tuple[dict, int]:
-    """Yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için açıklama kabul edilir."""
-    out, rejected = {}, 0
+def _text(value, limit: int = 400) -> str | None:
+    """Boş olmayan metni kırpıp döndürür; metin değilse ya da boşsa None."""
+    return value.strip()[:limit] if isinstance(value, str) and value.strip() else None
+
+
+def _clean_review(record: dict) -> tuple[dict | None, bool]:
+    """Tek açıklama kaydı -> ({neden, duzeltme, karar, gerekce} | None, karar atıldı mı).
+
+    Karar yalnızca bilinen üç değerden biriyse ve (onayla dışında) gerekçesi varsa kabul edilir; aksi halde
+    karar atılır ama açıklama (neden + düzeltme) eski kurala göre yine geçerli olabilir.
+    """
+    raw_verdict, reason = record.get("karar"), _text(record.get("gerekce"))
+    verdict = raw_verdict if raw_verdict in VERDICTS else None
+    if verdict in ("yanlis_pozitif", "baglama_bagli") and (reason is None or len(reason) < MIN_REASON_CHARS):
+        verdict = None  # gerekçesiz eleme/koşul kabul edilmez: sessizce bir bulguyu yok saymak istemiyoruz
+    dropped = raw_verdict is not None and verdict is None
+    reason_text, fix_text = _text(record.get("neden")), _text(record.get("duzeltme"))
+    if verdict is not None:
+        return {"neden": reason_text or reason or "", "duzeltme": fix_text or "", "karar": verdict,
+                "gerekce": reason or ""}, dropped
+    if reason_text and isinstance(record.get("duzeltme"), str):
+        return {"neden": reason_text, "duzeltme": fix_text or "", "karar": None, "gerekce": ""}, dropped
+    return None, dropped
+
+
+def _clean_explanations(records, valid: set) -> tuple[dict, int, int]:
+    """Yalnızca motorun gerçekten bulduğu (kural, satır) çiftleri için açıklama/karar kabul edilir.
+
+    (kayıtlar, atılan kayıt sayısı, atılan karar sayısı) döndürür.
+    """
+    out, rejected, dropped_verdicts = {}, 0, 0
     for record in records if isinstance(records, list) else []:
         pair = (record.get("rule"), record.get("line")) if isinstance(record, dict) else None
-        if pair in valid and isinstance(record.get("neden"), str) and isinstance(record.get("duzeltme"), str):
-            out[f"{pair[0]}:{pair[1]}"] = {"neden": record["neden"].strip()[:400],
-                                           "duzeltme": record["duzeltme"].strip()[:400]}
-        else:
+        cleaned, dropped = _clean_review(record) if pair in valid else (None, False)
+        dropped_verdicts += dropped
+        if cleaned is None:
             rejected += 1
-    return out, rejected
+            continue
+        out[f"{pair[0]}:{pair[1]}"] = cleaned
+    return out, rejected, dropped_verdicts
 
 
 def _clean_fix(raw: dict, code: str, config: Config | None) -> dict:
@@ -188,18 +307,42 @@ def review_and_fix(code: str, findings: list[dict], settings: llm.Settings, *, l
     def validate(raw) -> dict:
         if not isinstance(raw, dict):
             raise llm.LLMError("Model beklenen JSON nesnesini döndürmedi.")
-        notes, rejected = _clean_explanations(raw.get("aciklamalar"), valid)
+        notes, rejected, dropped_verdicts = _clean_explanations(raw.get("aciklamalar"), valid)
+        extras, rejected_extras = llm.clean_candidates(raw.get("ek_sorunlar"), code, findings, relocate=True)
         fix = _clean_fix(raw, code, config)
+        unchanged = fix["kod"] is not None and fix["kod"].strip() == code.strip()
+        if unchanged:  # değişiklik önerilmedi: "bulgular azalmadı" diye reddedilecek sahte bir öneri göstermeyiz
+            fix = {"kod": None, "degisiklikler": [], "dogrulama": None}
         cases, rejected_cases = sanitize_cases(raw.get("test_girdileri"))
-        if not notes and fix["kod"] is None:
+        if not notes and not extras and fix["kod"] is None:
             raise llm.LLMError("Model kullanılabilir bir açıklama ya da düzeltme döndürmedi.")
-        return {"aciklamalar": notes, "reddedilen": rejected, **fix, "test_girdileri": cases,
-                "reddedilen_test": rejected_cases, "fonksiyon": _clean_function(raw.get("fonksiyon"), code, fix["kod"])}
+        return {"aciklamalar": notes, "reddedilen": rejected, "reddedilen_karar": dropped_verdicts,
+                "ek_sorunlar": extras[:MAX_EXTRA_ISSUES], "reddedilen_ek": rejected_extras,
+                "degisiklik_yok": unchanged, **fix, "test_girdileri": cases, "reddedilen_test": rejected_cases,
+                "fonksiyon": _clean_function(raw.get("fonksiyon"), code, fix["kod"])}
 
     return llm._run_task(settings, HYBRID_TASK, (llm._SYSTEM, user), validate, live=live, transport=transport)
 
 
 # --------------------------------------------------------------------------- dinamik sonucun yorumu
+
+MIN_MEANINGFUL_MS = 0.05   # bundan küçük süre farkları ölçüm gürültüsüdür; "yavaşladı" diye yorumlanmaz
+
+
+def function_speeds(result: dict) -> list[dict]:
+    """Fonksiyon başına hız karşılaştırması (her fonksiyonun Önce'de en yavaş kalan girdisi için)."""
+    rows = []
+    for name, data in (result.get("by_function") or {}).items():
+        single = {"ok": True, "before": data["before"], "after": data["after"]}
+        info = summarize(single)
+        gap = abs(data["before"]["median_ms"] - data["after"]["median_ms"])
+        rows.append({"function": name, "case": data.get("case"), "speedup": info["speedup"],
+                     "faster": "daha hızlı" in info["time_verdict"] and gap >= MIN_MEANINGFUL_MS,
+                     "slower": "yavaş" in info["time_verdict"] and gap >= MIN_MEANINGFUL_MS,
+                     "verdict": info["time_verdict"],
+                     "before_ms": data["before"]["median_ms"], "after_ms": data["after"]["median_ms"]})
+    return rows
+
 
 def dynamic_state(dyn: dict | None) -> dict:
     """Dinamik katmanın durumu: none | unmeasurable | same | different | error (+ ayrıntılar)."""
@@ -209,8 +352,10 @@ def dynamic_state(dyn: dict | None) -> dict:
         return {"kind": "unmeasurable", "reason": dyn["reason"]}
     result = dyn.get("result") or {}
     if result.get("ok"):
+        functions = function_speeds(result)
         return {"kind": "same", "cases_total": result.get("cases_total", 1), "summary": summarize(result),
-                "headline": result.get("headline_case")}
+                "headline": result.get("headline_case"), "functions": functions,
+                "slower_functions": [f["function"] for f in functions if f["slower"]]}
     if "before_outcome" in result:
         cases = result.get("cases") or []
         return {"kind": "different", "total": len(cases) or 1,
@@ -225,7 +370,30 @@ def _minor_introduced(check: dict | None) -> int:
 
 
 def _is_slower(state: dict) -> bool:
-    return state["kind"] == "same" and "yavaş" in state["summary"]["time_verdict"]
+    """Genel ölçüm ya da herhangi bir fonksiyon Önce sürümünden anlamlı biçimde yavaşsa True."""
+    if state["kind"] != "same":
+        return False
+    return "yavaş" in state["summary"]["time_verdict"] or bool(state.get("slower_functions"))
+
+
+def performance_functions(code: str, findings: list[dict]) -> list[str]:
+    """Önce sürümünde Performans bulgusu bulunan üst düzey fonksiyonların adları."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return []
+    spans = [(n.name, n.lineno, getattr(n, "end_lineno", n.lineno)) for n in tree.body if isinstance(n, ast.FunctionDef)]
+    names = {name for f in findings if f["category"] == "Performance"
+             for name, start, end in spans if start <= f["line"] <= end}
+    return sorted(names)
+
+
+def unproven_speedups(state: dict, perf_functions, changed: list[str]) -> list[str]:
+    """Statik olarak "performans bulgusu çözüldü" görünen ama ölçümde belirgin hız kazancı olmayan fonksiyonlar."""
+    if state["kind"] != "same":
+        return []
+    speeds = {f["function"]: f for f in state.get("functions", [])}
+    return [name for name in perf_functions if name in changed and name in speeds and not speeds[name]["faster"]]
 
 
 def _speed_text(summary: dict) -> str:
@@ -247,6 +415,16 @@ def _static_row(check: dict | None) -> dict:
     return {"layer": layer, "status": "fail", "text": f"Başarısız kontrol: {failed}."}
 
 
+def _coverage_row(coverage: dict | None) -> list[dict]:
+    if not coverage or not (coverage["changed"] or coverage["indirect"]):
+        return []
+    status = "ok" if coverage["complete"] and not coverage["indirect"] else "warn"
+    text = coverage_text(coverage)
+    if coverage["indirect"]:
+        text += f" Doğrudan sınanamayan değişiklik: {', '.join(coverage['indirect'])}."
+    return [{"layer": "Dinamik: test kapsamı", "status": status, "text": text}]
+
+
 def _dynamic_rows(state: dict) -> list[dict]:
     names = ("Dinamik: çıktı eşitliği", "Dinamik: hız ve bellek")
     kind = state["kind"]
@@ -256,7 +434,8 @@ def _dynamic_rows(state: dict) -> list[dict]:
         verdict = state["summary"]["time_verdict"]
         status = next((s for key, s in speed_status.items() if key in verdict), "na")
         return [{"layer": names[0], "status": "ok",
-                 "text": f"Denenen {total} girdinin {total}'inde çıktı aynı (yalnızca bu girdiler için geçerli)."},
+                 "text": f"Denenen {total} girdinin {total}'inde çıktı, ekrana yazılanlar ve girdilerin son hali aynı "
+                         "(yalnızca bu girdiler için geçerli)."},
                 {"layer": names[1], "status": status, "text": _speed_text(state["summary"])}]
     if kind == "different":
         first = f"{state['bad']}/{state['total']} girdide çıktı farklı: düzeltme davranışı değiştirmiş."
@@ -268,7 +447,8 @@ def _dynamic_rows(state: dict) -> list[dict]:
             {"layer": names[1], "status": "na", "text": "—"}]
 
 
-def _decide(check: dict | None, state: dict, allow_behavior_change: bool = False) -> tuple[str, str]:
+def _decide(check: dict | None, state: dict, allow_behavior_change: bool = False, coverage: dict | None = None,
+            unproven: list[str] | None = None) -> tuple[str, str]:
     """(karar, başlık). Karar: bekliyor | red | kismen | kabul | kabul_uyari."""
     if not check:
         return "bekliyor", "Sonra sürümü bekleniyor"
@@ -278,25 +458,52 @@ def _decide(check: dict | None, state: dict, allow_behavior_change: bool = False
         if allow_behavior_change:
             return "kabul_uyari", "Kabul (uyarıyla): çıktı değişti; bu değişiklik bilerek kabul edildi"
         return "red", "Reddedildi: çıktılar farklı, düzeltme davranışı değiştirmiş"
+    if state["kind"] != "same":
+        return "kismen", "Kısmen doğrulandı: statik geçti, davranış henüz ölçülmedi"
     if _is_slower(state):
-        return "kabul_uyari", "Kabul edilebilir ama dikkat: Sonra sürümü daha yavaş"
-    minor = _minor_introduced(check)
-    if state["kind"] == "same" and minor:
-        return "kabul_uyari", f"Kabul edilebilir ama dikkat: {minor} küçük yeni bulgu doğdu, çıktı ve hız tamam"
-    if state["kind"] == "same":
-        total = state["cases_total"]
-        return "kabul", f"Kabul edilebilir: statik doğrulama geçti, {total}/{total} girdide çıktı aynı"
-    return "kismen", "Kısmen doğrulandı: statik geçti, davranış henüz ölçülmedi"
+        slow = state.get("slower_functions") or []
+        where = f" ({', '.join(slow)})" if slow else ""
+        return "kabul_uyari", f"Kabul edilebilir ama dikkat: Sonra sürümü daha yavaş{where}"
+    if coverage and coverage["untested"]:
+        return "kismen", ("Kısmen doğrulandı: değişen şu fonksiyonlar için test girdisi yok: "
+                          + ", ".join(coverage["untested"]))
+    if unproven:
+        return "kabul_uyari", ("Kabul edilebilir ama dikkat: statik bulgu çözüldü, fakat ölçümde hız kazancı yok: "
+                               + ", ".join(unproven))
+    if coverage and coverage["indirect"]:
+        return "kabul_uyari", ("Kabul edilebilir ama dikkat: şu değişiklikler doğrudan sınanamadı: "
+                               + ", ".join(coverage["indirect"]))
+    if _minor_introduced(check):
+        return "kabul_uyari", "Kabul edilebilir ama dikkat: yeni bir YZ göstergesi doğdu (bulgu sayılmaz), çıktı ve hız tamam"
+    total = state["cases_total"]
+    return "kabul", f"Kabul edilebilir: statik doğrulama geçti, {total}/{total} girdide davranış aynı"
 
 
-def overall_verdict(check: dict | None, dyn: dict | None, allow_behavior_change: bool = False) -> dict:
+def _coverage_of(dyn: dict | None, sources: tuple[str, str] | None) -> dict | None:
+    """Ölçümde kullanılan girdilere göre test kapsamı (kaynaklar bilinmiyorsa None)."""
+    result = (dyn or {}).get("result") or {}
+    if not sources or not result.get("cases"):
+        return None
+    cases = [{"function": c.get("function")} for c in result["cases"] if c.get("function")]
+    return test_coverage(sources[0], sources[1], cases)
+
+
+def overall_verdict(check: dict | None, dyn: dict | None, allow_behavior_change: bool = False, *,
+                    sources: tuple[str, str] | None = None, perf_functions=()) -> dict:
     """Üç katmanın birleşik kararı: {"decision", "title", "rows"}.
 
     `allow_behavior_change`: güvenlik düzeltmeleri (ör. md5 -> sha256) çıktıyı kaçınılmaz olarak değiştirir;
     kullanıcı bunu bilerek kabul ederse "çıktılar farklı" durumu red yerine uyarılı kabul sayılır."""
     state = dynamic_state(dyn)
-    decision, title = _decide(check, state, allow_behavior_change)
-    return {"decision": decision, "title": title, "rows": [_static_row(check), *_dynamic_rows(state)]}
+    coverage = _coverage_of(dyn, sources) if state["kind"] == "same" else None
+    unproven = unproven_speedups(state, perf_functions, coverage["changed"] if coverage else [])
+    decision, title = _decide(check, state, allow_behavior_change, coverage, unproven)
+    rows = [_static_row(check), *_dynamic_rows(state), *_coverage_row(coverage)]
+    if unproven:
+        rows.append({"layer": "Dinamik: hız kanıtı", "status": "warn",
+                     "text": "Statik kural bu fonksiyonlarda bulguyu çözülmüş saydı ama ölçümde belirgin hız kazancı "
+                             "yok: " + ", ".join(unproven) + ". Kural kandırılmış olabilir."})
+    return {"decision": decision, "title": title, "rows": rows, "coverage": coverage, "unproven": unproven}
 
 
 # --------------------------------------------------------------------------- reddedilen düzeltmeyi geri bildirimle yeniden düzelttirme
@@ -320,23 +527,35 @@ def _static_notes(after: str, check: dict | None) -> list[str]:
     return notes
 
 
-def _dynamic_notes(dyn: dict | None) -> list[str]:
+def _dynamic_notes(dyn: dict | None, unproven: list[str] | None = None) -> list[str]:
     state = dynamic_state(dyn)
     notes: list[str] = []
     if state["kind"] == "different":
         cases = ((dyn or {}).get("result") or {}).get("cases") or []
         for case in [c for c in cases if not c.get("same")][:3]:
-            notes.append(f"Çıktı farklı, girdi '{case.get('label')}': Önce sürümü {case.get('before_outcome', '')[:120]} "
-                         f"döndürdü, senin sürümün {case.get('after_outcome', '')[:120]} döndürdü.")
+            reasons = ", ".join(case.get("diff") or []) or "çıktı"
+            where = f"{case.get('function')}, " if case.get("function") else ""
+            notes.append(f"Davranış farklı ({where}girdi '{case.get('label')}', fark: {reasons}): Önce sürümü "
+                         f"{case.get('before_outcome', '')[:120]} verdi, senin sürümün {case.get('after_outcome', '')[:120]} verdi. "
+                         "Dönüş değeri, print çıktısı ve girdi listesinin yerinde değişmesi de birebir korunmalı.")
     if _is_slower(state):
-        notes.append("Sonra sürümü Önce sürümünden daha yavaş çıktı; daha verimli bir çözüm gerekli. "
+        slow = state.get("slower_functions") or []
+        notes.append("Sonra sürümü Önce sürümünden daha yavaş çıktı"
+                     + (f" ({', '.join(slow)})" if slow else "") + "; daha verimli bir çözüm gerekli. "
                      + _speed_text(state["summary"]))
+    if unproven:
+        notes.append("Statik kural şu fonksiyonlarda bulguyu çözülmüş saydı ama ölçümde hız kazancı yok (döngüyü "
+                     "comprehension'a taşımak algoritmik maliyeti azaltmaz): " + ", ".join(unproven)
+                     + ". Gerçekten daha az işlem yapan bir algoritma (set/dict/Counter, tek geçiş) kullan.")
     return notes
 
 
-def rejection_feedback(before: str, after: str, check: dict | None, dyn: dict | None) -> list[str]:
+def rejection_feedback(before: str, after: str, check: dict | None, dyn: dict | None, perf_functions=()) -> list[str]:
     """Reddedilen (ya da yavaş) düzeltme için LLM'e anlatılacak somut, kısa nedenler."""
-    return (_static_notes(after, check) + _dynamic_notes(dyn))[:_MAX_FEEDBACK_ITEMS]
+    state = dynamic_state(dyn)
+    coverage = _coverage_of(dyn, (before, after)) if state["kind"] == "same" else None
+    unproven = unproven_speedups(state, perf_functions, coverage["changed"] if coverage else [])
+    return (_static_notes(after, check) + _dynamic_notes(dyn, unproven))[:_MAX_FEEDBACK_ITEMS]
 
 
 def _refine_prompt(code: str, previous: str, items: list[dict], feedback: list[str]) -> str:
@@ -389,17 +608,19 @@ def auto_refine(code: str, after: str, findings: list[dict], settings: llm.Setti
     `run_dynamic(after) -> dyn | None`: statik kontrolü geçen her aday için çalıştırılır (yoksa yalnızca statik döngü).
     Dönen sözlük: kod, check, dyn, verdict, history (her tur: karar, başlık, nedenler, varsa hata)."""
     rounds = max(0, min(int(rounds), MAX_REFINE_ROUNDS))
+    perf = performance_functions(code, findings)
     history: list[dict] = []
     current = after
     for turn in range(rounds + 1):
         check = llm.verify_fix(code, current, config)
         dyn = run_dynamic(current) if run_dynamic and check["verified"] else None
         state = dynamic_state(dyn)
-        verdict = overall_verdict(check, dyn, allow_behavior_change)
+        verdict = overall_verdict(check, dyn, allow_behavior_change, sources=(code, current), perf_functions=perf)
         entry = {"tur": turn, "karar": verdict["decision"], "baslik": verdict["title"],
-                 "nedenler": rejection_feedback(code, current, check, dyn)}
+                 "nedenler": rejection_feedback(code, current, check, dyn, perf)}
         history.append(entry)
-        needs_work = verdict["decision"] == "red" or _is_slower(state) or bool(_minor_introduced(check))
+        needs_work = (verdict["decision"] == "red" or _is_slower(state) or bool(_minor_introduced(check))
+                      or bool(verdict["unproven"]))
         if turn == rounds or not needs_work:
             break
         try:
@@ -440,6 +661,13 @@ def _static_badges(f: dict, resolved: bool | None) -> list[dict]:
 
 
 def _llm_badges(note: dict | None, llm_ran: bool) -> list[dict]:
+    verdict = (note or {}).get("karar")
+    if verdict == "onayla":
+        return [{"layer": "LLM", "status": "ok", "text": "Doğruladı: bu kodda gerçek bir sorun."}]
+    if verdict == "yanlis_pozitif":
+        return [{"layer": "LLM", "status": "na", "text": "Elendi (yanlış pozitif): " + note["gerekce"]}]
+    if verdict == "baglama_bagli":
+        return [{"layer": "LLM", "status": "warn", "text": "Bağlama bağlı: " + note["gerekce"]}]
     if note:
         return [{"layer": "LLM", "status": "ok", "text": "Açıklama üretildi; kural ve satır statik bulguyla eşleşti."}]
     if llm_ran:
@@ -465,22 +693,54 @@ def _dynamic_badges(f: dict, resolved: bool | None, state: dict) -> list[dict]:
 
 def build_cards(findings: list[dict], explanations: dict | None, after_findings: list[dict] | None,
                 dyn: dict | None, *, llm_ran: bool = False) -> list[dict]:
-    """Her bulgu için {finding, resolved, badges, note}. Rozetler hangi katmanın neyi doğruladığını söyler."""
+    """Her bulgu için {finding, resolved, badges, note, verdict, risky_elimination}. Rozetler hangi katmanın neyi doğruladığını söyler.
+
+    `verdict`: LLM'in kararı (onayla / yanlis_pozitif / baglama_bagli) ya da karar verilmediyse None.
+    Elenen bulgu kartlardan silinmez; `risky_elimination`, yüksek önemli bir bulgunun elendiğini işaretler.
+    """
     state = dynamic_state(dyn)
     flags = _resolved_flags(findings, after_findings)
     cards = []
     for f, resolved in zip(findings, flags):
         note = (explanations or {}).get(f"{f['rule']}:{f['line']}")
         badges = [*_static_badges(f, resolved), *_llm_badges(note, llm_ran), *_dynamic_badges(f, resolved, state)]
-        cards.append({"finding": f, "resolved": resolved, "badges": badges, "note": note})
+        verdict = (note or {}).get("karar")
+        cards.append({"finding": f, "resolved": resolved, "badges": badges, "note": note, "verdict": verdict,
+                      "risky_elimination": verdict == "yanlis_pozitif" and f["severity"] in RISKY_SEVERITIES})
     return cards
 
 
 def card_marker(card: dict) -> str:
-    """Kart başlığı için kısa işaret: ✗ (reddedildi), ✓ (çözüldü), • (açık)."""
+    """Kart başlığı için kısa işaret: ✗ (reddedildi), ⊘ (LLM eledi), ✓ (çözüldü), • (açık)."""
     if any(b["status"] == "fail" for b in card["badges"]):
         return "✗"
+    if card.get("verdict") == "yanlis_pozitif":
+        return "⊘"
     return "✓" if card["resolved"] else "•"
+
+
+def active_findings(cards: list[dict]) -> list[dict]:
+    """LLM'in elemediği bulgular (düzeltilecek olanlar). Elenenler silinmez, yalnızca bu listeden çıkar."""
+    return [c["finding"] for c in cards if c["verdict"] != "yanlis_pozitif"]
+
+
+def verdict_summary(cards: list[dict], nonblank_lines: int) -> dict:
+    """Karar sayıları ve elemenin skora etkisi. AST skoru değişmez; 'LLM sonrası' skor ayrıca verilir.
+
+    Skor, `metrics.quality_score` ile aynı formülle hesaplanır (tek doğruluk kaynağı).
+    """
+    counts = Counter(c["verdict"] or "karar_yok" for c in cards)
+
+    def score(findings: list[dict]) -> int:
+        objects = [Finding(**{**f, "corroborated_by": tuple(f.get("corroborated_by", ()))}) for f in findings]
+        return quality_score(objects, nonblank_lines)
+
+    return {
+        "toplam": len(cards), "onayla": counts["onayla"], "yanlis_pozitif": counts["yanlis_pozitif"],
+        "baglama_bagli": counts["baglama_bagli"], "karar_yok": counts["karar_yok"],
+        "riskli_eleme": sum(c["risky_elimination"] for c in cards),
+        "skor_ast": score([c["finding"] for c in cards]), "skor_llm_sonrasi": score(active_findings(cards)),
+    }
 
 
 def after_findings_of(after: str, config: Config | None = None) -> list[dict] | None:
@@ -490,8 +750,10 @@ def after_findings_of(after: str, config: Config | None = None) -> list[dict] | 
 
 
 def hybrid_report(code: str, after: str | None, cards: list[dict], check: dict | None, dyn: dict | None,
-                  meta: dict | None = None) -> dict:
+                  meta: dict | None = None, extras: list[dict] | None = None, nonblank_lines: int | None = None) -> dict:
     """Üç katmanın sonucunu tek JSON'da toplar (teknik rapor ve sunum için)."""
+    nonblank = nonblank_lines if nonblank_lines is not None else sum(bool(x.strip()) for x in code.splitlines())
+    llm_ran = any(c["note"] for c in cards) or bool(extras)
     return {
         "layers": "statik (AST) + LLM + dinamik (çalıştırma)",
         "llm": meta or {},
@@ -499,8 +761,12 @@ def hybrid_report(code: str, after: str | None, cards: list[dict], check: dict |
         "after": after,
         "static_verification": check,
         "dynamic": (dyn or {}).get("result") if dyn and not dyn.get("reason") else dyn,
-        "verdict": overall_verdict(check, dyn),
+        "verdict": overall_verdict(check, dyn, sources=(code, after) if after else None,
+                                   perf_functions=performance_functions(code, [c["finding"] for c in cards])),
+        "llm_review": {"ran": llm_ran, "summary": verdict_summary(cards, nonblank) if cards else None,
+                       "extra_issues": extras or []},
         "findings": [{**c["finding"], "resolved_in_after": c["resolved"], "badges": c["badges"],
-                      "llm_note": c["note"]} for c in cards],
-        "limits": "Dinamik ölçüm yalnızca verilen test girdileri için geçerlidir; LLM çıktısı tek başına kanıt değildir.",
+                      "llm_note": c["note"], "llm_verdict": c["verdict"]} for c in cards],
+        "limits": "Dinamik ölçüm yalnızca verilen test girdileri için geçerlidir; LLM çıktısı tek başına kanıt değildir. "
+                  "Elenen (yanlış pozitif) bulgular silinmez; eleme LLM görüşüdür.",
     }

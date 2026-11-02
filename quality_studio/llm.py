@@ -63,7 +63,6 @@ BEHAVIOR_RULE = (
     "çıktıyı ya da davranışı değiştirecekse ya da emin değilsen onu YAPMA: o kısmı olduğu gibi bırak ve nedenini "
     "'degisiklikler' içinde kısaca yaz. Küçük ama güvenli bir iyileştirme, riskli büyük bir yeniden yazmadan iyidir.\n"
 )
-BLOCKING_SEVERITIES = frozenset({"medium", "high", "critical"})  # bunlardan biri doğarsa düzeltme reddedilir
 MAX_CODE_CHARS = 20_000
 TIMEOUT_SECONDS = 60
 
@@ -337,6 +336,76 @@ def explain_findings(code: str, findings: list[dict], settings: Settings, *, liv
 CANDIDATE_CATEGORIES = ("Security", "Performance", "Code Smell", "Reliability", "Redundancy", "Style")
 
 
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def _locate_quote(quote: str, lines: list[str], line: int, relocate: bool) -> int | None:
+    """Alıntının gerçekten koddaki yerini bulur; bulunamazsa None (model uydurmuştur).
+
+    Önce modelin verdiği satırın çevresine bakılır. `relocate=True` iken (satır numarasız kod gönderen hibrit
+    istem) alıntı kodun başka bir satırında aynen geçiyorsa satır numarası ona düzeltilir: alıntı gerçek koddan
+    geldiği için uydurma sayılmaz, yalnızca modelin satır sayma hatası giderilir.
+    """
+    squashed = _squash(quote)
+    window = "\n".join(lines[max(0, line - 2):line + 1]) if 1 <= line <= len(lines) else ""
+    if squashed and squashed in _squash(window):
+        return line
+    if not relocate or len(squashed) < 4:
+        return None
+    hits = [i for i, text in enumerate(lines, 1) if squashed in _squash(text)]
+    return min(hits, key=lambda i: abs(i - line)) if hits else None
+
+
+def _candidate_position(record, lines: list[str], relocate: bool) -> tuple[int, str] | None:
+    """Kaydın (gerçek satır, alıntı) çifti; satır ya da alıntı gerçek koda uymuyorsa None."""
+    if not isinstance(record, dict):
+        return None
+    line, quote = record.get("line"), record.get("alinti")
+    if not (isinstance(line, int) and not isinstance(line, bool) and isinstance(quote, str) and quote.strip()):
+        return None
+    if not relocate and not 1 <= line <= len(lines):
+        return None
+    found = _locate_quote(quote, lines, line, relocate)
+    return None if found is None else (found, quote.strip()[:200])
+
+
+def _lines_to_rules(findings: list[dict]) -> dict[int, set[tuple[str, str]]]:
+    """Her satırı kapsayan AST bulgularının (kural, kategori) çiftleri."""
+    by_line: dict[int, set[tuple[str, str]]] = {}
+    for f in findings:
+        for n in range(f["line"], f["end_line"] + 1):
+            by_line.setdefault(n, set()).add((f["rule"], f["category"]))
+    return by_line
+
+
+def clean_candidates(records, code: str, findings: list[dict], *, relocate: bool = False) -> tuple[list[dict], int]:
+    """Modelin 'kaçırılan sorun' kayıtlarını koda karşı doğrular. (kabul edilenler, atılan sayısı) döndürür.
+
+    Satır numarası ve alıntı gerçek koda uymayan kayıt atılır. Kabul edilen kayıt, o satırı kapsayan AST bulgularından
+    biri AYNI kategoriden ise 'ast_overlap' (AST ile örtüşüyor), değilse 'unverified' (doğrulanmadı) etiketi alır.
+    Kategori şartı, fonksiyon boyunca uzanan alakasız bir bulgunun (ör. docstring yok) gerçek bir kaçırılan sorunu
+    'örtüşüyor' göstermesini engeller.
+    """
+    lines, by_line = code.splitlines(), _lines_to_rules(findings)
+    out, rejected = [], 0
+    for r in records if isinstance(records, list) else []:
+        position = _candidate_position(r, lines, relocate)
+        if position is None:
+            rejected += 1
+            continue
+        line, quote = position
+        category = r.get("kategori") if r.get("kategori") in CANDIDATE_CATEGORIES else "Code Smell"
+        overlap = sorted({rule for rule, found in by_line.get(line, set()) if found == category})
+        out.append({
+            "line": line, "quote": quote, "category": category,
+            "title": str(r.get("baslik", ""))[:120], "why": str(r.get("neden", ""))[:400],
+            "fix": str(r.get("duzeltme", ""))[:400],
+            "status": "ast_overlap" if overlap else "unverified", "ast_rules": overlap,
+        })
+    return out, rejected
+
+
 def suggest_candidates(code: str, findings: list[dict], settings: Settings, *, live: bool = True,
                        transport=_http) -> Outcome:
     """AST'nin kaçırmış olabileceği sorunları aday olarak önerir; her aday koda karşı doğrulanır."""
@@ -349,33 +418,10 @@ def suggest_candidates(code: str, findings: list[dict], settings: Settings, *, l
         f'"kategori": "{" | ".join(CANDIDATE_CATEGORIES)}", "baslik": "kısa", "neden": "1 cümle", "duzeltme": "1 cümle"}}]}}\n\n'
         f"ZATEN BULUNANLAR:\n{json.dumps(known)}\n\nKOD (satır numaralı):\n{_numbered(code)}"
     )
-    lines = code.splitlines()
-    by_line: dict[int, set[str]] = {}
-    for f in findings:
-        for n in range(f["line"], f["end_line"] + 1):
-            by_line.setdefault(n, set()).add(f["rule"])
 
     def validate(raw) -> dict:
         records = raw.get("adaylar", []) if isinstance(raw, dict) else raw
-        out, rejected = [], 0
-        for r in records if isinstance(records, list) else []:
-            line, quote = (r.get("line") if isinstance(r, dict) else None), (r.get("alinti") if isinstance(r, dict) else None)
-            if not (isinstance(line, int) and 1 <= line <= len(lines) and isinstance(quote, str) and quote.strip()):
-                rejected += 1
-                continue
-            # alıntı gerçekten o satırda (ya da komşu satırlarda) geçmeli; yoksa model uydurmuştur
-            window = "\n".join(lines[max(0, line - 2):line + 1])
-            if re.sub(r"\s+", "", quote) not in re.sub(r"\s+", "", window):
-                rejected += 1
-                continue
-            overlap = sorted(by_line.get(line, set()))
-            out.append({
-                "line": line, "quote": quote.strip()[:200],
-                "category": r.get("kategori") if r.get("kategori") in CANDIDATE_CATEGORIES else "Code Smell",
-                "title": str(r.get("baslik", ""))[:120], "why": str(r.get("neden", ""))[:400],
-                "fix": str(r.get("duzeltme", ""))[:400],
-                "status": "ast_overlap" if overlap else "unverified", "ast_rules": overlap,
-            })
+        out, rejected = clean_candidates(records, code, findings)
         return {"adaylar": out, "reddedilen": rejected}
 
     return _run_task(settings, "candidates", (_SYSTEM, user), validate, live=live, transport=transport)
@@ -408,16 +454,17 @@ def verify_fix(before: str, after: str, config: Config | None = None) -> dict:
     effect = impact(before, after, config)
     resolved, introduced = effect["resolved"], effect["introduced"]
     add("Bulgular azaldı", resolved > 0, f"{resolved} bulgu çözüldü." if resolved else "Hiçbir bulgu çözülmedi.")
-    blocking = [r for r in effect["introduced_rules"] if r["severity"] in BLOCKING_SEVERITIES]
-    minor = [r for r in effect["introduced_rules"] if r["severity"] not in BLOCKING_SEVERITIES]
+    # Sıfır tolerans: düşük önemli bile olsa yeni bir bulgu doğuran düzeltme geçmez. Tek istisna "YZ göstergeleri"
+    # (olasılıksal, skora girmez); onlar bulgu değil ipucudur ve ayrıca bilgi olarak yazılır.
+    blocking = [r for r in effect["introduced_rules"] if r["category"] != "AI Pattern"]
+    hints = [r for r in effect["introduced_rules"] if r["category"] == "AI Pattern"]
     if blocking:
-        detail = "Ciddi yeni bulgu doğdu: " + ", ".join(f"{r['rule']} ({r['severity']})" for r in blocking)
-    elif minor:
-        detail = ("Yalnızca düşük önemde yeni bulgu: " + ", ".join(r["rule"] for r in minor)
-                  + " (kabul edilebilir, ama iyileştirilebilir).")
+        detail = "Düzeltme yeni bulgu doğurdu: " + ", ".join(f"{r['rule']} ({r['severity']})" for r in blocking)
+    elif hints:
+        detail = "Yeni bulgu yok. (Yalnızca YZ göstergesi: " + ", ".join(r["rule"] for r in hints) + "; bulgu sayılmaz.)"
     else:
         detail = "Yeni bulgu yok."
-    add("Ciddi yeni bulgu eklenmedi", not blocking, detail)
+    add("Yeni bulgu eklenmedi", not blocking, detail)
     return {"verified": all(c["gecti"] for c in checks), "checks": checks, "effect": effect}
 
 
