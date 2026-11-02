@@ -1,0 +1,50 @@
+{
+ "task": "explain",
+ "model": "gemini-flash-latest",
+ "raw": {
+  "aciklamalar": [
+   {
+    "rule": "SEC104",
+    "line": 3,
+    "neden": "Kullanıcı girdisi doğrudan sorgu dizesine eklenerek çalıştırıldığı için SQL enjeksiyonu riski taşır.",
+    "duzeltme": "Sorguyu dize birleştirme yerine parametreli sorgu kullanarak çalıştırın."
+   },
+   {
+    "rule": "SEC101",
+    "line": 9,
+    "neden": "`eval()` fonksiyonu dinamik kod çalıştırdığı için güvenlik açığı ve performans sorunları yaratır.",
+    "duzeltme": "`eval()` yerine doğrudan matematiksel ifadeyi (`1 + 2`) ya da güvenli kütüphaneleri kullanın."
+   },
+   {
+    "rule": "CQ201",
+    "line": 10,
+    "neden": "Hata türü belirtilmeden kullanılan çıplak `except`, beklenmeyen tüm hataları (örneğin KeyboardInterrupt) yakalar.",
+    "duzeltme": "Sadece yakalamak istediğiniz özel istisna türünü belirtin (örneğin `except Exception:`)."
+   },
+   {
+    "rule": "CQ202",
+    "line": 10,
+    "neden": "İstisna bloğunda `pass` kullanılarak yakalanan hata tamamen yoksayılmış ve gizlenmiştir.",
+    "duzeltme": "Hatayı en azından loglayın veya uygun bir şekilde ele alıp üst katmana fırlatın."
+   },
+   {
+    "rule": "CQ103",
+    "line": 1,
+    "neden": "`find_user` genel fonksiyonunun amacını ve parametrelerini açıklayan bir docstring bulunmuyor.",
+    "duzeltme": "Fonksiyon tanımının hemen altına işlevini açıklayan üç tırnaklı bir docstring ekleyin."
+   },
+   {
+    "rule": "CQ103",
+    "line": 6,
+    "neden": "`process` genel fonksiyonunun ne yaptığını açıklayan bir docstring eksik.",
+    "duzeltme": "Fonksiyonun başına amacını ve dönüş değerini belirten bir docstring ekleyin."
+   },
+   {
+    "rule": "CQ104",
+    "line": 8,
+    "neden": "Python'da `None` kontrolü için `==` yerine kimlik kontrolü yapan `is` operatörü önerilir.",
+    "duzeltme": "`value == None` ifadesini `value is None` olarak değiştirin."
+   }
+  ]
+ }
+}
