@@ -1,4 +1,4 @@
-"""Dinamik analiz: önce/sonra kodunu çalıştırıp süre, bellek ve çıktı eşitliğini ölçer.
+"""Dinamik analiz: önce/sonra kodunu çalıştırıp süre, bellek ve çıktı eşitliğini ölçer (bir ya da birkaç test girdisiyle).
 
 İki çalışma modu vardır:
   * "docker": izole kutu (ağ yok, salt-okunur dosya sistemi, yetkiler kapalı). Önerilen moddur.
@@ -32,6 +32,7 @@ import copy, json, pathlib, statistics, sys, time, tracemalloc
 
 WORK = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else '/work')
 cfg = json.loads((WORK / 'config.json').read_text())
+CASES = cfg.get('cases') or [{'label': 'girdi 1', 'args': cfg['args'], 'kwargs': cfg['kwargs']}]
 ns_before = {'__name__': 'benchmark_before'}
 ns_after = {'__name__': 'benchmark_after'}
 
@@ -44,35 +45,35 @@ def load(path, namespace):
     return fn
 
 
-def fresh_args():
-    return copy.deepcopy(cfg['args']), copy.deepcopy(cfg['kwargs'])
+def fresh_args(case):
+    return copy.deepcopy(case['args']), copy.deepcopy(case['kwargs'])
 
 
-def outcome(fn):
-    args, kwargs = fresh_args()
+def outcome(fn, case):
+    args, kwargs = fresh_args(case)
     try:
         return ('ok', fn(*args, **kwargs))
     except Exception as exc:
         return ('error', type(exc).__name__, str(exc))
 
 
-def measure_time(fn):
+def measure_time(fn, case):
     for _ in range(3):
-        args, kwargs = fresh_args()
+        args, kwargs = fresh_args(case)
         fn(*args, **kwargs)
     samples = []
     for _ in range(cfg['repeats']):
-        args, kwargs = fresh_args()
+        args, kwargs = fresh_args(case)
         start = time.perf_counter_ns()
         fn(*args, **kwargs)
         samples.append((time.perf_counter_ns() - start) / 1e6)
     return {'median_ms': statistics.median(samples), 'min_ms': min(samples)}
 
 
-def measure_memory(fn):
+def measure_memory(fn, case):
     peaks = []
     for _ in range(cfg['memory_repeats']):
-        args, kwargs = fresh_args()
+        args, kwargs = fresh_args(case)
         tracemalloc.start()
         try:
             fn(*args, **kwargs)
@@ -82,19 +83,43 @@ def measure_memory(fn):
     return {'median_peak_bytes': statistics.median(peaks)}
 
 
+def compare_outcomes(f, g):
+    rows = []
+    for case in CASES:
+        a, b = outcome(f, case), outcome(g, case)
+        rows.append({'label': case['label'], 'same': a == b, 'kind': a[0],
+                     'before_outcome': repr(a)[:400], 'after_outcome': repr(b)[:400]})
+    return rows
+
+
+def fail(message, rows, **extra):
+    print(json.dumps({'ok': False, 'error': message, 'cases': rows, **extra}))
+    raise SystemExit(0)
+
+
 try:
     f = load(str(WORK / 'before.py'), ns_before)
     g = load(str(WORK / 'after.py'), ns_after)
-    a, b = outcome(f), outcome(g)
-    if a != b:
-        print(json.dumps({'ok': False, 'error': 'Önce ve Sonra sürümlerinin çıktısı ya da hatası farklı',
-                          'before_outcome': repr(a)[:400], 'after_outcome': repr(b)[:400]}))
-        raise SystemExit(0)
-    result = {'ok': True, 'repeats': cfg['repeats'], 'memory_repeats': cfg['memory_repeats'],
-              'equivalent_for_test_input': True}
-    for label, fn in (('before', f), ('after', g)):
-        result[label] = {**measure_time(fn), **measure_memory(fn)}
-    print(json.dumps(result))
+    rows = compare_outcomes(f, g)
+    different = [r for r in rows if not r['same']]
+    if different:
+        fail('Önce ve Sonra sürümlerinin çıktısı ya da hatası farklı', rows,
+             before_outcome=different[0]['before_outcome'], after_outcome=different[0]['after_outcome'])
+    by_label = {c['label']: c for c in CASES}
+    for row in rows:
+        row['timed'] = row['kind'] == 'ok'
+        if row['timed']:
+            case = by_label[row['label']]
+            for label, fn in (('before', f), ('after', g)):
+                row[label] = {**measure_time(fn, case), **measure_memory(fn, case)}
+    timed = [r for r in rows if r['timed']]
+    if not timed:
+        fail('Tüm test girdilerinde iki sürüm de aynı hatayı verdi; ölçülecek bir çalışma yok', rows)
+    headline = max(timed, key=lambda r: r['before']['median_ms'])
+    print(json.dumps({'ok': True, 'repeats': cfg['repeats'], 'memory_repeats': cfg['memory_repeats'],
+                      'equivalent_for_test_input': True, 'cases_total': len(rows), 'cases_same': len(rows),
+                      'cases': rows, 'headline_case': headline['label'],
+                      'before': headline['before'], 'after': headline['after']}))
 except SystemExit:
     raise
 except Exception as exc:
@@ -172,6 +197,27 @@ def _validate(before: str, after: str, function: str, args, kwargs) -> str | Non
     if not isinstance(args, list) or not isinstance(kwargs, dict):
         return "Konumsal argümanlar JSON dizisi, isimli argümanlar JSON nesnesi olmalıdır."
     return None
+
+
+MAX_CASES = 8
+MAX_CASE_CHARS = 20_000
+
+
+def _validate_cases(cases) -> str | None:
+    """Çoklu test girdisi listesini doğrular: en fazla MAX_CASES, her biri {label, args, kwargs}."""
+    if not isinstance(cases, list) or not 1 <= len(cases) <= MAX_CASES:
+        return f"Test girdisi listesi 1 ile {MAX_CASES} arasında kayıt içermelidir."
+    for case in cases:
+        if not (isinstance(case, dict) and isinstance(case.get("args"), list) and isinstance(case.get("kwargs"), dict)):
+            return "Her test girdisi {label, args (dizi), kwargs (nesne)} biçiminde olmalıdır."
+        if len(json.dumps(case)) > MAX_CASE_CHARS:
+            return "Bir test girdisi çok büyük (JSON olarak en fazla 20 000 karakter)."
+    return None
+
+
+def _normalize_cases(cases: list[dict]) -> list[dict]:
+    return [{"label": str(c.get("label") or f"girdi {i}")[:40], "args": c["args"], "kwargs": c["kwargs"]}
+            for i, c in enumerate(cases, 1)]
 
 
 def _docker_command(folder: Path, name: str) -> list[str]:
@@ -262,29 +308,24 @@ def summarize(result: dict, noise: float = 0.10) -> dict:
                                       "Sonra sürümü daha çok bellek ayırıyor")}
 
 
-def benchmark(before: str, after: str, function: str, args=None, kwargs=None,
-              options: BenchmarkOptions = BenchmarkOptions()) -> dict:
-    """Bir fonksiyonun iki sürümünü çalıştırıp karşılaştırır (Docker kutusunda ya da yerel yedek modda)."""
+def _precheck(before: str, after: str, function: str, args, kwargs, cases, options: BenchmarkOptions) -> str | None:
+    """Ölçümden önceki tüm denetimler; sorun varsa Türkçe hata mesajı, yoksa None."""
     if options.mode not in ("docker", "yerel"):
-        return {"ok": False, "error": "Geçersiz mod: 'docker' veya 'yerel' olmalı."}
+        return "Geçersiz mod: 'docker' veya 'yerel' olmalı."
     if options.mode == "docker" and not find_docker():
-        return {"ok": False, "error": "Docker komutu kurulu değil ya da PATH içinde yok. "
-                                      "Docker Desktop'ı kurun veya 'yerel' yedek modu kullanın."}
-    args = [] if args is None else args
-    kwargs = {} if kwargs is None else kwargs
+        return ("Docker komutu kurulu değil ya da PATH içinde yok. "
+                "Docker Desktop'ı kurun veya 'yerel' yedek modu kullanın.")
     try:
         problem = _validate(before, after, function, args, kwargs)
     except SyntaxError as exc:
-        return {"ok": False, "error": f"Sözdizimi hatası (satır {exc.lineno}): {exc.msg}"}
-    if problem:
-        return {"ok": False, "error": problem}
-    repeats = max(3, min(int(options.repeats), 40))
-    config = {"function": function, "args": args, "kwargs": kwargs,
-              "repeats": repeats, "memory_repeats": min(5, repeats)}
-    if options.mode == "docker":
-        problem = ensure_image(options.pull_timeout)
-        if problem:
-            return {"ok": False, "error": problem}
+        return f"Sözdizimi hatası (satır {exc.lineno}): {exc.msg}"
+    if problem or cases is None:
+        return problem
+    return _validate_cases(cases)
+
+
+def _execute(config: dict, before: str, after: str, options: BenchmarkOptions) -> dict:
+    """Dosyaları geçici klasöre yazar ve seçilen modda (Docker ya da yerel) çalıştırır."""
     name = f"cqs-bench-{uuid.uuid4().hex[:12]}"
     with tempfile.TemporaryDirectory(prefix="quality_bench_") as tmp:
         folder = Path(tmp)
@@ -293,9 +334,32 @@ def benchmark(before: str, after: str, function: str, args=None, kwargs=None,
         for filename, content in files.items():
             (folder / filename).write_text(content, encoding="utf-8")
         if options.mode == "docker":
-            result = _run_container(_docker_command(folder, name), name, options.timeout)
-        else:
-            result = _run_local(_local_command(folder), folder, options.timeout)
+            return _run_container(_docker_command(folder, name), name, options.timeout)
+        return _run_local(_local_command(folder), folder, options.timeout)
+
+
+def benchmark(before: str, after: str, function: str, args=None, kwargs=None,
+              options: BenchmarkOptions = BenchmarkOptions(), cases: list[dict] | None = None) -> dict:
+    """Bir fonksiyonun iki sürümünü çalıştırıp karşılaştırır (Docker kutusunda ya da yerel yedek modda).
+
+    `cases` verilirse her girdi için çıktı eşitliği denetlenir; süre ve bellek, Önce sürümünün en yavaş
+    kaldığı girdi için raporlanır (diğer girdilerin ölçümleri `result["cases"]` içindedir).
+    """
+    args = [] if args is None else args
+    kwargs = {} if kwargs is None else kwargs
+    problem = _precheck(before, after, function, args, kwargs, cases, options)
+    if problem:
+        return {"ok": False, "error": problem}
+    repeats = max(3, min(int(options.repeats), 40))
+    config = {"function": function, "args": args, "kwargs": kwargs,
+              "repeats": repeats, "memory_repeats": min(5, repeats)}
+    if cases is not None:
+        config["cases"] = _normalize_cases(cases)
+    if options.mode == "docker":
+        problem = ensure_image(options.pull_timeout)
+        if problem:
+            return {"ok": False, "error": problem}
+    result = _execute(config, before, after, options)
     if result.get("ok"):
         result["mode"] = options.mode
     return result

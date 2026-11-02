@@ -1,6 +1,6 @@
 """Arayüz duman testi: gerçek Streamlit olmadan, sahte bir `streamlit` modülüyle app.py'yi çalıştırır.
 
-Amaç sekmelerin (Kod İnceleme, Statik, Dinamik, ...) istisna fırlatmadan çizildiğini doğrulamaktır;
+Amaç sekmelerin (Hibrit İnceleme, Proje ve Değerlendirme, Katmanlar ve Sunum Rehberi) istisna fırlatmadan çizildiğini doğrulamaktır;
 görsel doğruluğu ya da gerçek Streamlit davranışını kanıtlamaz.
 """
 import runpy
@@ -129,10 +129,11 @@ class AppSmokeTests(unittest.TestCase):
     def test_review_fix_and_impact_flow(self):
         fake = FakeStreamlit(pressed={"Kodu analiz et", "Seçili düzeltmeleri uygula"}, checked=True)
         _run_app(fake)
-        self.assertIn("after", fake.session_state)
+        self.assertTrue(fake.session_state.get("hy_after"))
         self.assertEqual(fake.logged("error"), [])
-        _run_app(fake)  # ikinci çalıştırma: Sonra sürümü ve dinamik sekme aynı durumu kullanır
+        _run_app(fake)  # ikinci çalıştırma: Sonra sürümü, rozetler ve sonuç kartı aynı durumu kullanır
         self.assertEqual(fake.logged("error"), [])
+        self.assertTrue(any("Kısmen doğrulandı" in str(a) for a in fake.logged("info")))
 
     def test_dynamic_tab_shows_benchmark_result(self):
         fake = FakeStreamlit(pressed={"İzole ölçümü başlat"}, checked=True)
@@ -160,28 +161,62 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(any("Dinamik (çalıştırma)" in t for t in tables))
         self.assertEqual(fake.logged("error"), [])
 
-    def test_llm_tab_without_key_asks_for_key(self):
-        fake = FakeStreamlit()
+    def test_hybrid_without_key_asks_for_key_but_static_layer_works(self):
+        fake = FakeStreamlit(pressed={"Kodu analiz et"})
         with mock.patch.dict("os.environ", {}, clear=True):
             _run_app(fake)
         infos = " ".join(str(a) for a in fake.logged("info"))
         self.assertIn("API anahtar", infos)
+        self.assertTrue(any("Statik" in str(a) for a in fake.logged("markdown")))
         self.assertEqual(fake.logged("error"), [])
 
-    def test_llm_tab_explain_and_fix_flow_with_mocked_provider(self):
+    def _llm_data(self):
+        return {"aciklamalar": {}, "reddedilen": 0, "reddedilen_test": 0, "fonksiyon": "process",
+                "kod": "def process(value):\n    return 1\n", "degisiklikler": ["a"],
+                "dogrulama": None,
+                "test_girdileri": [{"label": "tipik", "args": [1], "kwargs": {}}]}
+
+    def test_hybrid_llm_then_measure_flow_with_mocked_layers(self):
         from quality_studio import llm
-        fake = FakeStreamlit(pressed={"Bulguları LLM ile açıkla", "LLM ile düzeltme öner"}, checked=True)
+        button = "Hibrit incelemeyi çalıştır (LLM açıklar, düzeltir, test girdisi önerir)"
+        fake = FakeStreamlit(pressed={"Kodu analiz et", button, "Önerilen düzeltmeyi ölçerek doğrula"}, checked=True)
         fake.session_state["llm_key"] = "test-anahtari"
-        explain = llm.Outcome({"aciklamalar": {}, "reddedilen": 0}, "kayıtlı", "m")
-        fix_data = {"kod": "x = 1\n", "degisiklikler": ["a"],
-                    "dogrulama": {"verified": False, "effect": None,
-                                  "checks": [{"kontrol": "Bulgular azaldı", "gecti": False, "ayrinti": "yok"}]}}
-        with mock.patch("quality_studio.llm.explain_findings", return_value=explain), \
-                mock.patch("quality_studio.llm.propose_fix", return_value=llm.Outcome(fix_data, "canlı", "m")):
+        result = {"ok": True, "mode": "docker", "cases_total": 1, "cases_same": 1, "headline_case": "tipik",
+                  "cases": [{"label": "tipik", "same": True, "timed": True, "kind": "ok",
+                             "before": {"median_ms": 2.0, "median_peak_bytes": 2048},
+                             "after": {"median_ms": 1.0, "median_peak_bytes": 1024}}],
+                  "before": {"median_ms": 2.0, "median_peak_bytes": 2048},
+                  "after": {"median_ms": 1.0, "median_peak_bytes": 1024}}
+        with mock.patch("quality_studio.hybrid.review_and_fix",
+                        return_value=llm.Outcome(self._llm_data(), "canlı", "m")), \
+                mock.patch("quality_studio.benchmark.benchmark", return_value=result):
             _run_app(fake)
-        self.assertEqual(fake.logged("error")[:1] and [e for e in fake.logged("error") if "Statik doğrulama" not in str(e)], [])
-        self.assertEqual(fake.session_state["llm_fix"]["source"], "canlı")
-        self.assertEqual(fake.session_state["llm_explain"]["source"], "kayıtlı")
+            self.assertEqual(fake.session_state["hy_review"]["source"], "canlı")
+            self.assertIn("return 1", fake.session_state["hy_after"])
+            self.assertIn("tipik", fake.session_state["hy_cases"])
+            _run_app(fake)  # ikinci tur: ölçüm düğmesi (Sonra sürümü artık dolu)
+        self.assertEqual(fake.session_state["hy_bench"]["sources"][2], "process")
+        self.assertTrue(fake.session_state["hy_bench"]["result"]["ok"])
+        # sahte düzeltme find_user'ı sildiği için statik doğrulama kasıtlı olarak reddeder; başka hata olmamalı
+        self.assertEqual([e for e in fake.logged("error") if "statik doğrulama" not in str(e).lower()], [])
+
+    def test_hybrid_reports_unmeasurable_script_instead_of_failing(self):
+        fake = FakeStreamlit(pressed={"Kodu analiz et"}, checked=True)
+        fake.session_state["editor"] = "x = 1\nprint(x)\n"
+        fake.session_state["hy_after"] = "x = 2\nprint(x)\n"
+        _run_app(fake)
+        warnings = " ".join(str(a) for a in fake.logged("warning"))
+        self.assertIn("Dinamik ölçüm yapılamıyor", warnings)
+        self.assertIn("fonksiyon yok", warnings)
+
+    def test_hybrid_invalid_test_input_json_is_reported_not_run(self):
+        fake = FakeStreamlit(pressed={"Kodu analiz et", "Önerilen düzeltmeyi ölçerek doğrula"}, checked=True)
+        fake.session_state["hy_after"] = "def process(value):\n    return 1\n"
+        fake.session_state["hy_cases"] = "[bozuk"
+        with mock.patch("quality_studio.benchmark.benchmark") as bench:
+            _run_app(fake)
+        bench.assert_not_called()
+        self.assertTrue(any("Geçersiz JSON" in str(a) for a in fake.logged("error")))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@ Python kaynak kodunu **çalıştırmadan** (yalnızca AST ile) analiz eden araç
 güvenilirlik, tekrar eden kod ve "yapay zekâ üretimi göstergeleri". Önce/sonra etki analizi, muhafazakâr yama önerileri,
 ZIP/dizin taraması, istatistiksel veri seti karşılaştırması ve kural bazlı precision/recall ölçümü içerir.
 
-> LLM katmanı **isteğe bağlıdır**: API anahtarı girilmezse araç yalnızca statik/dinamik katmanlarla çalışır.
+> LLM katmanı **isteğe bağlıdır**: API anahtarı girilmezse araç yalnızca statik/dinamik katmanlarla çalışır
+> (Hibrit İnceleme'de Sonra sürümünü elle yazabilir ya da kural tabanlı hızlı yamaları kullanabilirsiniz).
 > Anahtar koda ya da dosyaya yazılmaz, yalnızca oturumda bellekte tutulur.
 > Skor ve AI göstergeleri sezgiseldir; doğruluk, güvenlik veya yazarlık kanıtı değildir.
 
@@ -17,30 +18,17 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Arayüz tamamen Türkçedir. Sekmeler:
+Arayüz tamamen Türkçedir. Üç sekme vardır:
 
 | Sekme | Ne gösterir |
 |---|---|
-| **Kod İnceleme** | bulgular, satır görünümü, yamalar, önce/sonra etki analizi |
-| **Statik Analiz** | AST ağacı, hangi kuralın hangi düğümde tetiklendiği, kategori dağılımı, 36 kurallık katalog |
-| **Dinamik Analiz** | önce/sonra kodunu Docker'da izole çalıştırıp süre, bellek ve çıktıyı karşılaştırır |
-| **LLM Açıklama** | bulguları bu koda özgü Türkçe açıklar, kaçırılan adayları önerir, düzeltme önerir; her çıktı AST ile doğrulanır |
-| **İnsan vs YZ** | etiketli veri setinde istatistiksel karşılaştırma |
-| **Proje (ZIP)** | ZIP olarak yüklenen projenin statik taraması |
-| **Kural Değerlendirmesi** | kural bazında precision/recall ölçümü |
+| **Hibrit İnceleme** | Tek ekranda: kod → statik sonuç ve bulgu kartları (Statik / LLM / Dinamik rozetleri) → tek LLM çağrısı (açıklama + düzeltme + test girdisi) → Önce \| Sonra statik doğrulama → çalıştırarak ölçme → üç katmanın tek karar kartı |
+| **Proje ve Değerlendirme** | ZIP projesinin statik taraması, İnsan vs YZ istatistiksel karşılaştırması, kural bazında precision/recall |
+| **Katmanlar ve Sunum Rehberi** | statik / dinamik / LLM katmanlarının anlatımı, AST ağacı, elle dinamik ölçüm, sunumda ne söylenmeli |
 
-## Komut satırı
-
-```bash
-python -m quality_studio dosya.py                     # tek dosya
-python -m quality_studio proje_klasoru --format sarif --output sonuc.sarif
-python -m quality_studio proje.zip --fail-on high     # CI kapısı
-python -m quality_studio kod.py --disable PERF101,CQ103 --config esikler.json
-python -m quality_studio kod.py --external            # kuruluysa ruff + bandit ile çapraz doğrulama
-```
-
-Çıkış kodu: `0` = `--fail-on` (varsayılan `medium`) seviyesinde bulgu yok, `1` = bulgu var, `2` = girdi/kullanım hatası.
-Bir satırdaki bulguyu bastırmak için `# noqa: SEC105` veya `# cqs: ignore[SEC105]`.
+**Hibrit zincir:** LLM önerir → AST doğrular → çalıştırma ölçer. LLM'in açıklaması yalnızca gerçek (kural, satır) çiftleri için,
+düzeltmesi ancak statik doğrulamadan geçerse, test girdileri ancak geçerli JSON ise kabul edilir. Davranış ve hız LLM'e
+sorulmaz, Docker'da (ya da uyarılı yerel yedek modda) ölçülür. Ölçüm yalnızca denenen girdiler için geçerlidir.
 
 ## Testler
 
@@ -56,7 +44,7 @@ testi vardır.
 
 | Yol | İçerik |
 |---|---|
-| `quality_studio/` | motor, kurallar, metrikler, yama, rapor, istatistik, benchmark, CLI |
+| `quality_studio/` | motor, kurallar, metrikler, yama, rapor, istatistik, benchmark, LLM katmanı, hibrit birleştirme, CLI |
 | `app.py` | tek Streamlit arayüzü |
 | `tests/` | birim ve regresyon testleri |
 | `data/example_dataset.csv` | veri seti **format örneği** (bilimsel kanıt değil, bkz. teknik rapor §6) |
@@ -65,6 +53,8 @@ testi vardır.
 
 ## Dürüst notlar
 
+- Gerçek Gemini çağrısı ve hibrit akışın tamamı (LLM + Docker) geliştirme ortamında uçtan uca **denenmedi**; sahte taşıma katmanı,
+  sahte `streamlit` ve yerel ölçüm ile test edildi. Hibrit sekmesini kendi bilgisayarınızda bir kez elle deneyin.
 - Docker benchmark, ruff/bandit adaptörleri ve Streamlit arayüzü geliştirme ortamında **gerçek bileşenlerle çalıştırılmadı**
   (ağ yok, kurulu değildi); sahte süreçler/sahte `streamlit` modülü ile test edildi. İlk kurulumda elle deneyin.
 - Kural değerlendirmesi yazar etiketli, küçük ve sentetik bir kümedir (139 parça); gerçek dünya doğruluğu değildir.

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — Adım 6: Hibrit sistem
+
+### Added
+- `quality_studio/hybrid.py`: üç katmanı (statik AST, LLM, dinamik ölçüm) birleştirir.
+  - `review_and_fix`: **tek LLM çağrısı** ile bulgu açıklamaları + düzeltilmiş kod + fonksiyon adı + test girdileri; kural kayıtlarındaki
+    resmi düzeltme önerileri isteme eklenir; her parça ayrı doğrulanır (uydurma kural/satır, geçersiz kod, olmayan fonksiyon, bozuk JSON atılır).
+  - `build_cards`: her bulgu için **Statik / LLM / Dinamik rozetleri**; düzeltmeden sonra yeniden analizle "çözüldü" bilgisi.
+  - `overall_verdict`: statik doğrulama + çıktı eşitliği + hız tek karara bağlanır (kabul / uyarılı kabul / kısmen / red / bekliyor).
+  - `hybrid_report`: üç katmanın sonucunu tek JSON olarak indirir.
+- `benchmark(..., cases=[...])`: **çoklu test girdisi**. Her girdi için çıktı eşitliği denetlenir, bir girdide fark varsa düzeltme reddedilir;
+  girdi başına süre tablosu. Eski tek girdili kullanım aynen çalışır.
+- Arayüz **3 sekmeye** indi: *Hibrit İnceleme* (tek sayfalık akış), *Proje ve Değerlendirme*, *Katmanlar ve Sunum Rehberi*.
+  Aday öneriler ana akıştan çıkarıldı, "LLM ikinci görüş" bölümüne taşındı. Kural tabanlı hızlı yamalar korundu.
+- Ölçülemeyen durumlar açıkça gösterilir (fonksiyonu olmayan script, ortak fonksiyon yok, tüm girdilerde aynı hata).
+- Sonra sürümü düzenlenince statik doğrulama, rozetler ve sonuç kartı yeniden hesaplanır; kod ya da Sonra değişince eski ölçüm geçersiz sayılır.
+
+### Changed
+- Eski ayrı LLM düğmeleri (açıkla / düzelt) tek hibrit düğmeye birleşti (kota: 1 istek). `llm.propose_fix` ve `llm.explain_findings` duruyor.
+- `benchmark()` iç yapısı sadeleştirildi (`_precheck`, `_execute`); `llm.strip_code_fence` eklendi.
+
+### Tests
+- `tests/test_hybrid.py` (33 test) ve yeniden yazılan arayüz duman testleri; toplam 180 test. Gerçek Gemini ve gerçek Docker çağrısı testlerde yapılmaz.
+
 ## Unreleased — Adım 5: LLM katmanı
 
 ### Added

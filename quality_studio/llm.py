@@ -40,6 +40,7 @@ PROVIDERS = {
         "kind": "openai",
         "base": "https://api.groq.com/openai/v1",
         "default_model": "llama-3.3-70b-versatile",
+        "json_mode": True,
         "env": "GROQ_API_KEY",
     },
     "OpenRouter": {
@@ -52,6 +53,17 @@ PROVIDERS = {
 
 CACHE_DIR = Path(os.environ.get("QS_LLM_CACHE", ".llm_cache"))
 MAX_FINDINGS_PER_CALL = 12
+
+# Düzeltme isteyen TÜM istemlerin başına eklenen değişmez ilke (LLM'e söylenen kural).
+BEHAVIOR_RULE = (
+    "TEMEL İLKE (her şeyden önce gelir): Bu araç kodun ne yaptığını değiştirmek için değil, aynı işi daha hızlı ve "
+    "daha güvenli yapması için var. Bu yüzden kodun çıktısı ve çalışması AYNEN korunmalı: aynı girdiye aynı çıktı, "
+    "aynı veri tipi, aynı sıra, aynı hata davranışı, aynı fonksiyon adları ve imzalar. Hızı artırma ve tehlikeli ya "
+    "da kötü kalıpları temizleme işini ancak bu sınırların içinde, güvenle yapabiliyorsan yap. Bir iyileştirme "
+    "çıktıyı ya da davranışı değiştirecekse ya da emin değilsen onu YAPMA: o kısmı olduğu gibi bırak ve nedenini "
+    "'degisiklikler' içinde kısaca yaz. Küçük ama güvenli bir iyileştirme, riskli büyük bir yeniden yazmadan iyidir.\n"
+)
+BLOCKING_SEVERITIES = frozenset({"medium", "high", "critical"})  # bunlardan biri doğarsa düzeltme reddedilir
 MAX_CODE_CHARS = 20_000
 TIMEOUT_SECONDS = 60
 
@@ -163,6 +175,8 @@ def _complete(settings: Settings, system: str, user: str, transport=_http) -> st
     url = f"{spec['base']}/chat/completions"
     body = {"model": model, "temperature": 0.2,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if spec.get("json_mode"):
+        body["response_format"] = {"type": "json_object"}  # modeli saf JSON döndürmeye zorlar
     data = transport(url, {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, body)
     try:
         return data["choices"][0]["message"]["content"] or ""
@@ -193,6 +207,7 @@ def _complete_resilient(settings: Settings, system: str, user: str, transport=_h
 
 def parse_json(text: str):
     """Model çıktısından JSON çıkarır (```json çitlerini ve çevresindeki metni tolere eder)."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)  # akıl yürütme modelleri
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE)
     candidates = [cleaned]
     for opener, closer in (("{", "}"), ("[", "]")):
@@ -393,9 +408,22 @@ def verify_fix(before: str, after: str, config: Config | None = None) -> dict:
     effect = impact(before, after, config)
     resolved, introduced = effect["resolved"], effect["introduced"]
     add("Bulgular azaldı", resolved > 0, f"{resolved} bulgu çözüldü." if resolved else "Hiçbir bulgu çözülmedi.")
-    add("Yeni bulgu eklenmedi", introduced == 0,
-        "Yeni bulgu yok." if not introduced else f"{introduced} yeni bulgu doğdu.")
+    blocking = [r for r in effect["introduced_rules"] if r["severity"] in BLOCKING_SEVERITIES]
+    minor = [r for r in effect["introduced_rules"] if r["severity"] not in BLOCKING_SEVERITIES]
+    if blocking:
+        detail = "Ciddi yeni bulgu doğdu: " + ", ".join(f"{r['rule']} ({r['severity']})" for r in blocking)
+    elif minor:
+        detail = ("Yalnızca düşük önemde yeni bulgu: " + ", ".join(r["rule"] for r in minor)
+                  + " (kabul edilebilir, ama iyileştirilebilir).")
+    else:
+        detail = "Yeni bulgu yok."
+    add("Ciddi yeni bulgu eklenmedi", not blocking, detail)
     return {"verified": all(c["gecti"] for c in checks), "checks": checks, "effect": effect}
+
+
+def strip_code_fence(text: str) -> str:
+    """Modelin kodu ```python çitiyle sarmaladıysa çiti kaldırır."""
+    return re.sub(r"^```(?:python)?\s*|\s*```$", "", text.strip())
 
 
 def propose_fix(code: str, findings: list[dict], settings: Settings, *, live: bool = True,
@@ -407,6 +435,7 @@ def propose_fix(code: str, findings: list[dict], settings: Settings, *, live: bo
         raise LLMError("Düzeltilecek bulgu yok.")
     items = [{"rule": f["rule"], "line": f["line"], "message": f["message"]} for f in chosen]
     user = (
+        BEHAVIOR_RULE +
         "Aşağıdaki Python kodunu, listelenen bulguları giderecek şekilde düzelt. Kurallar: davranışı koru, "
         "fonksiyon adlarını ve imzalarını değiştirme, gereksiz yeniden yazma yapma, yeni bağımlılık ekleme.\n"
         'JSON biçimi: {"kod": "tam düzeltilmiş kod", "degisiklikler": ["kısa Türkçe madde", "..."]}\n\n'
@@ -416,7 +445,7 @@ def propose_fix(code: str, findings: list[dict], settings: Settings, *, live: bo
     def validate(raw) -> dict:
         if not isinstance(raw, dict) or not isinstance(raw.get("kod"), str) or not raw["kod"].strip():
             raise LLMError("Model düzeltilmiş kod döndürmedi.")
-        fixed = re.sub(r"^```(?:python)?\s*|\s*```$", "", raw["kod"].strip()) + "\n"
+        fixed = strip_code_fence(raw["kod"]) + "\n"
         changes = [str(c)[:200] for c in raw.get("degisiklikler", []) if isinstance(c, str)][:8]
         return {"kod": fixed, "degisiklikler": changes, "dogrulama": verify_fix(code, fixed, config)}
 

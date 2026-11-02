@@ -95,7 +95,7 @@ class RunnerScriptTests(unittest.TestCase):
         self.assertIn("def measure_memory", source)
         timed = source[source.index("def measure_time"):source.index("def measure_memory")]
         self.assertNotIn("tracemalloc", timed)
-        self.assertLess(timed.index("fresh_args()"), timed.index("perf_counter_ns"))
+        self.assertLess(timed.index("fresh_args("), timed.index("perf_counter_ns"))
 
 
 BEFORE = "def build(n):\n    r = []\n    for i in range(n):\n        r = r + [i]\n    return r\n"

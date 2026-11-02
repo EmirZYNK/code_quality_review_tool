@@ -28,9 +28,11 @@ quality_studio/
   external.py      isteğe bağlı ruff/bandit çapraz doğrulama
   project_scan.py  ZIP/dizin tarama (zip-slip, boyut, şifre kontrolleri)
   report.py        text / JSON / SARIF 2.1.0 / HTML
-  benchmark.py     isteğe bağlı Docker izole benchmark
+  benchmark.py     Docker izole (ya da uyarılı yerel yedek) ölçüm; bir ya da birkaç test girdisi
+  llm.py           sağlayıcıdan bağımsız LLM katmanı, önbellek, statik düzeltme doğrulaması
+  hybrid.py        tek LLM çağrısı + üç katmanın (statik/LLM/dinamik) rozetleri ve birleşik kararı
   cli.py           çıkış kodlu komut satırı
-app.py             tek Streamlit arayüzü (4 sekme)
+app.py             tek Streamlit arayüzü (3 sekme: Hibrit İnceleme, Proje ve Değerlendirme, Katmanlar ve Sunum Rehberi)
 ```
 
 Her kural `Context.report()` üzerinden, katalogdaki varsayılan önem/güven/CWE ile bulgu üretir.
@@ -232,6 +234,33 @@ Süreçte ilk tarama 88 bulgu verdi (kural revizyonlarından önceki sürümle);
 | Kural altyapısı, SARIF/JSON, çıkış kodu, `# noqa` | Yapıldı. |
 | Model adlarının doğrulanması | LLM kodu kaldırıldığı için konu dışı kaldı. |
 
+## 9a. Hibrit katman (Adım 6)
+
+Hedef (slayt: *Hibrit İnceleme Motoru*): AST tabanlı statik analizi LLM tabanlı anlamayla birleştirmek ve her bulguyu
+uygulanabilir bir düzeltmeyle açıklamak. Zincir: **LLM önerir → AST doğrular → çalıştırma ölçer.**
+
+| Katman | Rolü | Kanıt gücü |
+|---|---|---|
+| Statik (AST) | bulur; düzeltmeden sonra yeniden analizle çözüldü mü bakar | gösterge (kural tabanlı) |
+| LLM | bu koda özgü açıklama, düzeltilmiş kod ve test girdisi önerir | kanıt değil; her çıktısı doğrulanır |
+| Dinamik | iki sürümü aynı girdilerle çalıştırır: çıktı eşitliği, süre, bellek | ölçüm; yalnızca denenen girdiler için |
+
+* **Tek LLM çağrısı** (`hybrid.review_and_fix`): açıklamalar, düzeltilmiş kod, fonksiyon adı ve test girdileri bir arada gelir
+  (ücretsiz kotada çağrı sayısı sınırlı olduğu için). İstem, her bulgunun kural kaydındaki resmi düzeltme önerisini içerir.
+* **Doğrulama:** açıklama yalnızca motorun bulduğu (kural, satır) çiftleri için; kod `llm.verify_fix` ile (geçerli Python, adlar
+  korundu, bulgu azaldı, yeni bulgu yok); fonksiyon adı iki sürümde de var olmalı; test girdileri geçerli JSON ve boyut sınırlı olmalı.
+* **Çoklu test girdisi:** `benchmark(..., cases=[...])` her girdi için çıktı (ya da hata) eşitliğini denetler; bir girdide fark
+  çıkarsa düzeltme reddedilir. Süre ve bellek Önce sürümünün en yavaş kaldığı girdi için raporlanır. İki sürümün de aynı hatayı
+  verdiği girdi eşit sayılır ama zamanlanmaz.
+* **Rozetler:** her bulgu kartında Statik / LLM / Dinamik. Dinamik rozet bir bulgunun *giderildiğini* kanıtlamaz: performans
+  bulgularında hız oranını, diğerlerinde "davranış korundu"yu söyler.
+* **Birleşik karar** (`hybrid.overall_verdict`): `kabul` (statik geçti + tüm girdilerde çıktı aynı), `kabul_uyari` (Sonra daha yavaş),
+  `kismen` (dinamik yok/ölçülemedi), `red` (statik başarısız ya da çıktı farklı), `bekliyor` (Sonra sürümü yok).
+* **Ölçülemeyen durumlar** açıkça yazılır: fonksiyonu olmayan düz script, ortak fonksiyon adı olmayan sürümler, tüm girdilerde aynı hata.
+
+Sınırlar: "çıktı aynı" yalnızca verilen girdiler içindir; LLM'in seçtiği girdiler zayıf olabilir (kullanıcı düzenleyebilir); yerel yedek mod
+izole değildir ve LLM'in ürettiği kod da dışarıdan gelen kod sayılır; küçük girdilerde süre ölçümü gürültülüdür.
+
 ## 9. Tehdit modeli
 
 Analiz edilen kod **hiçbir zaman içe aktarılmaz veya çalıştırılmaz**. ZIP'te zip-slip (`..`, mutlak yol), şifreli üye, boyut ve
@@ -246,4 +275,5 @@ güvenlik sınırı değildir; çok kiracılı veya halka açık kullanımda dü
 - AI göstergeleri doğrulanmadı; gerçek insan/YZ veri setiyle ROC/AUC ölçülmeden tespit iddiası yapılmamalıdır.
 - ruff/bandit adaptörleri gerçek ikililerle, Docker akışı gerçek Docker'la, arayüz gerçek Streamlit'le elle denenmeli
   (geliştirme ortamında bunlar kurulu değildi; arayüz sahte bir `streamlit` modülüyle duman testinden geçirildi).
-- LLM katmanı eklenirse yalnızca açıklama/aday üretimi için, çıktısı AST ile çapraz doğrulanarak kullanılmalıdır.
+- LLM katmanı yalnızca öneri üretir; çıktısı AST ile ve çalıştırarak doğrulanır (§9a). Gerçek sağlayıcı ve Docker ile uçtan uca deneme elle yapılmalıdır.
+- LLM düzeltmelerinin doğruluk oranı bu çalışmada ölçülmedi; bunun için etiketli bir düzeltme veri seti gerekir.
